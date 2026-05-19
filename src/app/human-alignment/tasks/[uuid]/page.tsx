@@ -1233,9 +1233,7 @@ function LabellingTaskPageInner() {
   const someJobsSelected = selectedJobUuids.size > 0 && !allJobsSelected;
   const toggleSelectAllJobs = () => {
     setSelectedJobUuids((prev) =>
-      prev.size === jobs.length
-        ? new Set()
-        : new Set(jobs.map((j) => j.uuid)),
+      prev.size === jobs.length ? new Set() : new Set(jobs.map((j) => j.uuid)),
     );
   };
 
@@ -2778,7 +2776,9 @@ function LabellingTaskPageInner() {
                             title={itemDescription || undefined}
                           >
                             {itemDescription || (
-                              <span className="text-muted-foreground/60">—</span>
+                              <span className="text-muted-foreground/60">
+                                —
+                              </span>
                             )}
                           </p>
                           <ItemRowActions
@@ -3392,7 +3392,7 @@ function LabellingTaskPageInner() {
         }}
         onConfirm={handleDeleteSelectedJobs}
         title="Delete labelling jobs"
-        message={`Delete ${selectedJobUuids.size} labelling job${selectedJobUuids.size === 1 ? "" : "s"}? Any annotations recorded against ${selectedJobUuids.size === 1 ? "this job" : "these jobs"} will be lost. This cannot be undone.`}
+        message={`Delete ${selectedJobUuids.size} labelling job${selectedJobUuids.size === 1 ? "" : "s"}? All annotations made in ${selectedJobUuids.size === 1 ? "this job" : "these jobs"} will be lost. This cannot be undone.`}
         confirmText="Delete"
         isDeleting={deletingJobs}
       />
@@ -3404,7 +3404,7 @@ function LabellingTaskPageInner() {
         }}
         onConfirm={confirmDeleteOneJob}
         title="Delete labelling job"
-        message="Delete this labelling job? Any annotations recorded against it will be lost. This cannot be undone."
+        message="Delete this labelling job? All annotations made in this job will be lost. This cannot be undone."
         confirmText="Delete"
         isDeleting={deletingJobInFlight}
       />
