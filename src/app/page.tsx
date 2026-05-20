@@ -377,9 +377,11 @@ const tabs: LandingTab[] = [
   },
 ];
 
-import { ARTPARK_WEBSITE_URL, WHATSAPP_INVITE_URL } from "@/constants/links";
-
-const GITHUB_REPO_URL = "https://github.com/artpark-sahai-org/calibrate";
+import {
+  ARTPARK_WEBSITE_URL,
+  GITHUB_REPO_URL,
+  WHATSAPP_INVITE_URL,
+} from "@/constants/links";
 
 export default function HomePage() {
   const [activeFeatureSectionId, setActiveFeatureSectionId] =

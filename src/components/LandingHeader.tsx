@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 
+import { GITHUB_REPO_URL } from "@/constants/links";
+
 type LandingHeaderProps = {
   /** Whether the logo should link to / (for non-home pages) */
   showLogoLink?: boolean;
@@ -46,7 +48,7 @@ export function LandingHeader({
           Documentation
         </a>
         <a
-          href="https://github.com/artpark-sahai-org/calibrate"
+          href={GITHUB_REPO_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="p-2 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"

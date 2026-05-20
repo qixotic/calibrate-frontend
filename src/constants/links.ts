@@ -3,3 +3,7 @@ export const WHATSAPP_INVITE_URL =
 
 /** Official ARTPARK marketing site (used on landing eyebrow etc.). */
 export const ARTPARK_WEBSITE_URL = "https://www.artpark.in/";
+
+/** Open-source Calibrate CLI repo (landing header + open-source section). */
+export const GITHUB_REPO_URL =
+  "https://github.com/artpark-sahai-org/";

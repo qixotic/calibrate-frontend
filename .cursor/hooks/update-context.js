@@ -9,6 +9,8 @@ async function main() {
     console.log(JSON.stringify({}));
     return;
   }
+
+  return;
   
   // Only trigger if codebase-context.md was NOT the only file changed
   console.log(JSON.stringify({
