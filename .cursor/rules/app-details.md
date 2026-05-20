@@ -200,9 +200,12 @@ Provider website links (external link icons) are shown only on the new evaluatio
 - `deepgramSTTSupportedLanguages`: 44 languages - STT only provider
 - `elevenlabsSTTSupportedLanguages`: 94 languages - STT only (TTS has separate list)
 - `googleSTTSupportedLanguages`: 71 languages - STT only (TTS has separate list)
-- `openaiSTTSupportedLanguages`: 57 languages - used for both STT and TTS, also used by whisper/groq STT
+- `openaiSTTSupportedLanguages`: 57 languages - OpenAI STT (`gpt-4o-transcribe`) and OpenAI TTS only; **not** shared with Groq
+- `groqSTTSupportedLanguages`: 100 languages - Groq STT only (`whisper-large-v3-turbo`); Title Case English labels aligned with OpenAI Whisper's language-code map (e.g. `my` → `"Myanmar"`, `ht` → `"Haitian Creole"`). Frontend allowlist only — backend must accept the same codes when evaluating.
 - `sarvamSTTSupportedLanguages`: 11 Indic languages - used for both STT and TTS
 - `smallestAiSTTSupportedLanguages`: 32 languages - used for both STT and TTS
+
+**Groq STT vs OpenAI STT:** Groq and OpenAI STT are separate entries in `sttProviders` with separate `supportedLanguages` arrays. Do not point Groq at `openaiSTTSupportedLanguages`; Whisper on Groq supports a much wider set (including Bengali, Gujarati, Malayalam, Punjabi, Sindhi, Telugu) that OpenAI's 57-language STT list omits.
 
 **TTS Language Arrays** (`*TTSSupportedLanguages`):
 
@@ -424,7 +427,7 @@ A reusable sidebar dialog for creating and editing tools. Contains all form logi
 - **ZIP upload option**: Upload a ZIP file containing an `audios/` folder with .wav files and a `data.csv` mapping audio files to transcriptions
 - **Download sample ZIP**: Button to download `sample_stt_input.zip` from **`handleDownloadSampleZip`** in `STTDatasetEditor.tsx` (dependency: **JSZip**). Each `audios/sample_*.wav` is **PCM WAVE** (mono, **44.1 kHz**, 16-bit, **`numSamples` 4410** = **exactly 100 ms** of zero PCM—same as `sampleRate / 10` in code), embedded via **`audiosFolder.file(name, bytes, { compression: "STORE" })`** so WAV bytes are not DEFLATE-compressed inside the archive. **Why not header-only / 16 kHz / ultra-short**: zero-length `data` chunks often break **QuickTime** (**-12842**); very short **16 kHz** clips were also unreliable there; **44.1 kHz** and **100 ms** better match consumer players and **`getAudioDuration`** (below), which relies on **`HTMLAudioElement`** metadata.
 - **Select providers to evaluate** (compare multiple simultaneously)
-- **Choose language** (11 Indic languages: English, Hindi, Kannada, Bengali, Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu, Gujarati) - provider list filters based on language support
+- **Choose language** (13 options: English, Hindi, Kannada, Maithili, Bengali, Malayalam, Marathi, Odia, Punjabi, Sindhi, Tamil, Telugu, Gujarati) — provider list filters via each provider's `supportedLanguages` (Title Case). **Groq** (Whisper) is available for all of these except **Maithili** and **Odia**
 - **Run evaluation** - creates evaluation and redirects to detail page
 - **Row limit**: Dynamic per-user limit fetched from `GET /user-limits/me/max-rows-per-eval` (default 20). Shows limit toast via `showLimitToast()` if exceeded
 - **Audio duration limit**: Each audio file must be under 60 seconds. Validated client-side in `STTDatasetEditor.tsx` via **`getAudioDuration`** (`HTMLAudioElement` / `new Audio()` + `loadedmetadata` on an object URL—not `AudioContext` / `decodeAudioData`) before upload. Shows limit toast via `showLimitToast()` if exceeded
@@ -2585,15 +2588,18 @@ type LeaderboardSummary = {
 Both TTS and STT evaluations filter available providers based on the selected language:
 
 ```tsx
+// STT: SpeechToTextEvaluation.tsx — 13 language slugs
 type LanguageOption =
   | "english"
   | "hindi"
   | "kannada"
+  | "maithili"
   | "bengali"
   | "malayalam"
   | "marathi"
   | "odia"
   | "punjabi"
+  | "sindhi"
   | "tamil"
   | "telugu"
   | "gujarati";
@@ -2603,11 +2609,13 @@ const languageDisplayName: Record<LanguageOption, string> = {
   english: "English",
   hindi: "Hindi",
   kannada: "Kannada",
+  maithili: "Maithili",
   bengali: "Bengali",
   malayalam: "Malayalam",
   marathi: "Marathi",
   odia: "Odia",
   punjabi: "Punjabi",
+  sindhi: "Sindhi",
   tamil: "Tamil",
   telugu: "Telugu",
   gujarati: "Gujarati",
@@ -2624,6 +2632,7 @@ const getFilteredProviders = (language: LanguageOption) => {
 };
 ```
 
+- **STT evaluation gotcha (Groq):** `groqSTTSupportedLanguages` uses Whisper display names. Groq is hidden when the user picks **Maithili** or **Odia** because those labels are absent from the Whisper list. Adding a new evaluation language requires both a `LanguageOption` slug + `languageDisplayName` entry **and** checking each provider's `supportedLanguages` array (especially `groqSTTSupportedLanguages` for Whisper coverage).
 - Provider arrays (`sttProviders`, `ttsProviders`) have `label`, `value`, `model`, and optional `supportedLanguages` fields
 - TTS providers additionally have a `voiceId` field
 - **Provider display varies by context**:
@@ -2632,7 +2641,7 @@ const getFilteredProviders = (language: LanguageOption) => {
   - `getProviderLabel()` helper returns just the label: `provider.label`
 - Providers without `supportedLanguages` are shown for all languages
 - When language changes, selected providers that don't support the new language are automatically deselected
-- Language arrays are defined in `providers.ts` (e.g., `deepgramSTTSupportedLanguages`, `googleTTSSupportedLanguages`)
+- Language arrays are defined in `providers.ts` (e.g., `deepgramSTTSupportedLanguages`, `groqSTTSupportedLanguages`, `googleTTSSupportedLanguages`)
 
 ### Component Patterns
 
