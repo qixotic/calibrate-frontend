@@ -379,6 +379,7 @@ export const sarvamSTTSupportedLanguages = [
   "Gujarati",
   "Hindi",
   "Kannada",
+  "Maithili",
   "Malayalam",
   "Marathi",
   "Odia",

@@ -22,6 +22,7 @@ type LanguageOption =
   | "english"
   | "hindi"
   | "kannada"
+  | "maithili"
   | "bengali"
   | "malayalam"
   | "marathi"
@@ -37,6 +38,7 @@ const languageDisplayName: Record<LanguageOption, string> = {
   english: "English",
   hindi: "Hindi",
   kannada: "Kannada",
+  maithili: "Maithili",
   bengali: "Bengali",
   malayalam: "Malayalam",
   marathi: "Marathi",
@@ -85,12 +87,25 @@ export function SpeechToTextEvaluation({
   const filteredProviders = getFilteredProviders(language);
   const providerLabels = filteredProviders.map((p) => p.label);
 
+  useEffect(() => {
+    const only = getFilteredProviders(language);
+    if (only.length === 1) {
+      const onlyLabel = only[0].label;
+      setSelectedProviders((prev) =>
+        prev.size === 1 && prev.has(onlyLabel) ? prev : new Set([onlyLabel]),
+      );
+    }
+  }, [language]);
+
   // Handle language change - clear providers that don't support the new language
   const handleLanguageChange = (newLanguage: LanguageOption) => {
     setLanguage(newLanguage);
     const newFilteredProviders = getFilteredProviders(newLanguage);
     const supportedLabels = new Set(newFilteredProviders.map((p) => p.label));
     setSelectedProviders((prev) => {
+      if (newFilteredProviders.length === 1) {
+        return new Set([newFilteredProviders[0].label]);
+      }
       const newSet = new Set<string>();
       prev.forEach((label) => {
         if (supportedLabels.has(label)) {
@@ -400,6 +415,7 @@ export function SpeechToTextEvaluation({
                 <option value="english">English</option>
                 <option value="hindi">Hindi</option>
                 <option value="kannada">Kannada</option>
+                <option value="maithili">Maithili</option>
                 <option value="bengali">Bengali</option>
                 <option value="malayalam">Malayalam</option>
                 <option value="marathi">Marathi</option>
