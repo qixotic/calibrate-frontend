@@ -1,4 +1,6 @@
 import { signOut } from "next-auth/react";
+import { getActiveOrgUuid } from "@/lib/orgs";
+import { clearOrgsCache } from "@/hooks/useOrganizations";
 
 type RequestOptions = {
   method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
@@ -24,11 +26,19 @@ export function getDefaultHeaders(accessToken?: string): Record<string, string> 
   const headers: Record<string, string> = {
     accept: "application/json",
   };
-  
+
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
-  
+
+  // Active workspace is resolved by the backend from this header. When absent
+  // the backend falls back to the user's personal workspace, so this is safe
+  // to omit (e.g. during initial boot before /organizations resolves).
+  const activeOrgUuid = getActiveOrgUuid();
+  if (activeOrgUuid) {
+    headers["X-Org-UUID"] = activeOrgUuid;
+  }
+
   return headers;
 }
 
@@ -55,6 +65,14 @@ export async function apiClient<T>(
     ...customHeaders,
   };
 
+  // /organizations is the workspace-management surface (list, create,
+  // rename, members) and operates above any single workspace. Sending the
+  // active workspace header would either be ignored or — worse — cause a
+  // 403/404 after the user leaves the active workspace.
+  if (endpoint.startsWith("/organizations")) {
+    delete headers["X-Org-UUID"];
+  }
+
   // Add Content-Type for requests with body
   if (body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
@@ -71,6 +89,9 @@ export async function apiClient<T>(
     // Clear localStorage
     localStorage.removeItem("access_token");
     localStorage.removeItem("user");
+    localStorage.removeItem("activeOrgUuid");
+    // Clear in-memory caches that are scoped to the signed-in user.
+    clearOrgsCache();
     // Clear cookie
     document.cookie = "access_token=; path=/; max-age=0; SameSite=Lax";
     // Sign out via NextAuth

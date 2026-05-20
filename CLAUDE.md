@@ -37,7 +37,7 @@ There is currently no test suite checked in — `jest.config.js` is configured b
 
 **Routing structure** (`src/app/`):
 - Public: `/` (landing), `/login`, `/signup`, `/public/...` (shareable result pages)
-- Authenticated app pages: `/agents`, `/tools`, `/evaluators`, `/stt`, `/tests`, `/tts`, `/personas`, `/scenarios`, `/simulations`, `/datasets/[id]`
+- Authenticated app pages: `/agents`, `/tools`, `/evaluators`, `/stt`, `/tests`, `/tts`, `/personas`, `/scenarios`, `/simulations`, `/datasets/[id]`, `/workspace-settings`
 - API routes: `/api/auth` (NextAuth handler), `/api/debug-env`
 - The sidebar in `src/components/AppLayout.tsx` drives navigation: each `NavItem.id` maps to the route `/${id}`. Renaming a nav item's `id` changes the route.
 
@@ -45,9 +45,18 @@ There is currently no test suite checked in — `jest.config.js` is configured b
 
 **Access token hook**: Use `useAuth()` / `useAccessToken()` from `src/hooks/useAccessToken.ts` in new code — it unifies NextAuth session and localStorage JWT. Do NOT use `useSession()` directly (it only covers Google OAuth, not email/password).
 
-**Sign-out must clear all three**: `localStorage` (`access_token`, `user`), the `access_token` cookie, and `signOut()`.
+**Sign-out must clear all four**: `localStorage` (`access_token`, `user`, `activeOrgUuid`), the `access_token` cookie, and `signOut()`.
 
-**API client**: `src/lib/api.ts` wraps fetch with default headers (Bearer token) and auto-signs-out on 401. Prefer it over raw fetch when adding new backend calls.
+**API client**: `src/lib/api.ts` wraps fetch with default headers (Bearer token, `X-Org-UUID`) and auto-signs-out on 401. Prefer it over raw fetch when adding new backend calls.
+
+**Workspaces / orgs**: The backend is multi-tenant — every request resolves an active workspace from the `X-Org-UUID` header (falling back to the user's personal workspace if absent). Frontend plumbing:
+- `src/lib/orgs.ts` — types (`Organization`, `OrganizationMember`), localStorage helpers (`getActiveOrgUuid`, `setActiveOrgUuid`), and the `calibrate:active-org-changed` event.
+- `src/lib/api.ts` — `getDefaultHeaders()` reads the active uuid and attaches `X-Org-UUID`.
+- `src/lib/fetchInterceptor.ts` — monkey-patches `window.fetch` so legacy raw-fetch call sites also get the header.
+- `src/components/OrganizationBootstrapper.tsx` — mounted in the root layout. Installs the interceptor and, on first authenticated load, fetches `/organizations` and stashes a default uuid (preferring the personal workspace).
+- `src/hooks/useOrganizations.ts` — `useOrganizations` (list + create + rename), `useActiveOrgUuid` (subscribes to the event), `useOrgMembers` (list + invite + remove).
+- `src/components/WorkspaceSwitcher.tsx` — sidebar dropdown rendered above the nav in both expanded and collapsed sidebar modes. Switching workspaces triggers `window.location.reload()` so all in-flight resource fetches re-run under the new context.
+- `/workspace-settings` — rename the active workspace and manage members (shown for all workspaces, including personal). Each row shows the member's role (`owner` or `admin`) as a pill; the "Remove" button is hidden entirely for `role === "owner"`. On the current user's own row the button reads "Leave" and the confirm dialog uses leave-flavoured copy; after a successful self-leave, `clearActiveOrgUuid()` runs and the user is routed to `/agents` so the bootstrapper picks a fresh workspace.
 
 **Page skeleton**: every authenticated page is:
 ```tsx
