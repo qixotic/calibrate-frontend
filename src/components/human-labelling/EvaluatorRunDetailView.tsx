@@ -434,6 +434,61 @@ function isAnnotationAligned(
   );
 }
 
+/**
+ * Project a raw verdict source (annotation or evaluator run) onto the
+ * `match` / `score` / `reasoning` props the verdict card expects. Shared
+ * by the per-version card path and the grouped-evaluator card path.
+ */
+type CardDisplay = {
+  match: boolean | null;
+  score: number | null;
+  reasoning: string | null;
+};
+
+function resolveCardDisplay(
+  source: { value: unknown; reasoning: string | null } | null,
+  outputType: "binary" | "rating",
+): CardDisplay {
+  if (!source) return { match: null, score: null, reasoning: null };
+  let match: boolean | null = null;
+  let score: number | null = null;
+  if (outputType === "binary" && typeof source.value === "boolean") {
+    match = source.value;
+  } else if (outputType === "rating" && typeof source.value === "number") {
+    score = source.value;
+  }
+  const trimmed = source.reasoning?.trim();
+  return {
+    match,
+    score,
+    reasoning: trimmed && trimmed.length > 0 ? source.reasoning : null,
+  };
+}
+
+function annotationToSource(a: HumanAnnotation): {
+  value: unknown;
+  reasoning: string | null;
+} {
+  const topLevel = typeof a.reasoning === "string" ? a.reasoning : null;
+  const nested =
+    typeof a.value?.reasoning === "string"
+      ? (a.value.reasoning as string)
+      : null;
+  return { value: a.value?.value, reasoning: topLevel ?? nested };
+}
+
+function runToSource(r: EvaluatorRunRow | null | undefined): {
+  value: unknown;
+  reasoning: string | null;
+} | null {
+  if (!r) return null;
+  const reasoning =
+    typeof r.value?.reasoning === "string"
+      ? (r.value.reasoning as string)
+      : null;
+  return { value: r.value?.value, reasoning };
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -531,7 +586,11 @@ function SourcePill({
       </span>
       {monoSuffix && (
         <span
-          className={`font-mono text-[11px] ${selected ? "text-background/70" : "text-muted-foreground"}`}
+          className={`font-mono text-[10px] px-1.5 py-0.5 rounded-md border ${
+            selected
+              ? "border-background/40 bg-background/90 text-foreground"
+              : "border-foreground/20 bg-background text-foreground"
+          }`}
         >
           {monoSuffix}
         </span>
@@ -540,7 +599,7 @@ function SourcePill({
   );
 }
 
-function EvaluatorResultsPane({
+export function EvaluatorResultsPane({
   evaluators,
   evaluatorNamesById,
   runs,
@@ -550,6 +609,11 @@ function EvaluatorResultsPane({
   evaluatorVariablesByEvaluatorId,
   filterDisagreements,
   linkEvaluators,
+  itemDescription,
+  hideAgreementGlyph = false,
+  alwaysShowSourcePills = false,
+  showVersionInSourcePill = false,
+  groupVersionsByEvaluator = false,
 }: {
   evaluators: {
     evaluator_id: string;
@@ -564,15 +628,34 @@ function EvaluatorResultsPane({
   evaluatorVariablesByEvaluatorId: Record<string, Record<string, string>>;
   filterDisagreements: boolean;
   linkEvaluators: boolean;
+  itemDescription?: string | null;
+  /** Suppress the per-evaluator agreement tick/cross next to the source pills. */
+  hideAgreementGlyph?: boolean;
+  /** Always render the source-pill row even when no human annotations exist. */
+  alwaysShowSourcePills?: boolean;
+  /** Move the evaluator version label into the "Evaluator" source pill (as
+   *  a mono suffix) and hide it from the card. */
+  showVersionInSourcePill?: boolean;
+  /** Render all versions of the same evaluator side-by-side in one row. */
+  groupVersionsByEvaluator?: boolean;
 }) {
   const [selectionByEvaluator, setSelectionByEvaluator] = useState<
     Record<string, string>
   >({});
 
+  const descriptionBlock = itemDescription?.trim() ? (
+    <p className="text-sm text-foreground whitespace-pre-wrap break-words">
+      {itemDescription.trim()}
+    </p>
+  ) : null;
+
   if (evaluators.length === 0) {
     return (
-      <div className="border border-border rounded-xl p-4 text-sm text-muted-foreground">
-        No evaluators in this run.
+      <div className="space-y-3">
+        {descriptionBlock}
+        <div className="border border-border rounded-xl p-4 text-sm text-muted-foreground">
+          No evaluators in this run.
+        </div>
       </div>
     );
   }
@@ -593,15 +676,18 @@ function EvaluatorResultsPane({
 
   if (filterDisagreements && visibleEvaluators.length === 0) {
     return (
-      <div className="border border-border rounded-xl p-4 text-sm text-muted-foreground">
-        All evaluators agree with human annotations on this item.
+      <div className="space-y-3">
+        {descriptionBlock}
+        <div className="border border-border rounded-xl p-4 text-sm text-muted-foreground">
+          All evaluators agree with human annotations on this item.
+        </div>
       </div>
     );
   }
 
-  return (
-    <div className="space-y-4">
-      {visibleEvaluators.map((ev) => {
+  const renderEvaluatorCard = (
+    ev: { evaluator_id: string; evaluator_version_id?: string; name?: string },
+  ) => {
         const versionLabel = ev.evaluator_version_id
           ? versionLabels[ev.evaluator_version_id]
           : null;
@@ -612,24 +698,15 @@ function EvaluatorResultsPane({
               x.evaluator_version_id === ev.evaluator_version_id),
         );
         const displayName = evaluatorDisplayName(ev, evaluatorNamesById, r);
-        const reasoning =
-          typeof r?.value?.reasoning === "string"
-            ? (r.value.reasoning as string)
-            : null;
-
-        let match: boolean | null = null;
-        let score: number | null = null;
-        let outputType: "binary" | "rating" = "binary";
-
+        // Prefer the evaluator's declared output type so annotations still
+        // render with the right pill when the evaluator itself produced no
+        // value yet (e.g. items labelled by humans before a run).
+        let outputType: "binary" | "rating" =
+          r?.evaluator?.output_type === "rating" ? "rating" : "binary";
         if (r) {
           const v = r.value?.value;
-          if (typeof v === "boolean") {
-            outputType = "binary";
-            match = v;
-          } else if (typeof v === "number") {
-            outputType = "rating";
-            score = v;
-          }
+          if (typeof v === "boolean") outputType = "binary";
+          else if (typeof v === "number") outputType = "rating";
         }
 
         const stillRunning =
@@ -718,9 +795,19 @@ function EvaluatorResultsPane({
             )
           : annotations;
         const hasHumans = annotationPills.length > 0;
+        const evaluatorValue = r.value?.value;
+        const hasEvaluatorLabel =
+          evaluatorValue !== null && evaluatorValue !== undefined;
 
+        // If the row only has human annotations (evaluator hasn't produced a
+        // value), drop the "Evaluator" pill and default the selection to the
+        // first annotator so the card has something meaningful to show.
+        const defaultSelection =
+          !hasEvaluatorLabel && hasHumans
+            ? annotationPills[0].annotator_id
+            : "evaluator";
         const rawSelection =
-          selectionByEvaluator[ev.evaluator_id] ?? "evaluator";
+          selectionByEvaluator[ev.evaluator_id] ?? defaultSelection;
         const selectedAnnotation =
           rawSelection !== "evaluator"
             ? annotationPills.find((a) => a.annotator_id === rawSelection)
@@ -729,7 +816,7 @@ function EvaluatorResultsPane({
         const selection: string =
           rawSelection === "evaluator" || selectedAnnotation
             ? rawSelection
-            : "evaluator";
+            : defaultSelection;
 
         const setSelection = (sel: string) =>
           setSelectionByEvaluator((prev) => ({
@@ -746,48 +833,39 @@ function EvaluatorResultsPane({
             ? r.evaluator_version.scale_max
             : undefined;
 
-        let displayMatch: boolean | null = match;
-        let displayScore: number | null = score;
-        let displayReasoning: string | null = reasoning;
-
-        if (showHuman && selectedAnnotation) {
-          const v = selectedAnnotation.value?.value;
-          displayMatch = null;
-          displayScore = null;
-          if (outputType === "binary" && typeof v === "boolean") {
-            displayMatch = v;
-          } else if (outputType === "rating" && typeof v === "number") {
-            displayScore = v;
-          }
-          const topLevelReasoning =
-            typeof selectedAnnotation.reasoning === "string"
-              ? selectedAnnotation.reasoning
-              : null;
-          const nestedReasoning =
-            typeof selectedAnnotation.value?.reasoning === "string"
-              ? (selectedAnnotation.value.reasoning as string)
-              : null;
-          const raw = topLevelReasoning ?? nestedReasoning;
-          displayReasoning = raw && raw.trim().length > 0 ? raw : null;
-        }
+        const {
+          match: displayMatch,
+          score: displayScore,
+          reasoning: displayReasoning,
+        } = resolveCardDisplay(
+          showHuman && selectedAnnotation
+            ? annotationToSource(selectedAnnotation)
+            : runToSource(r),
+          outputType,
+        );
 
         return (
           <div
             key={`${ev.evaluator_id}-${ev.evaluator_version_id ?? ""}`}
             className="space-y-2"
           >
-            {hasHumans && (
+            {(hasHumans || alwaysShowSourcePills) && (
               <div className="flex flex-wrap items-center gap-1.5">
-                <AgreementGlyph
-                  perfect={humansForEvaluator?.agreement === 1}
-                  agreement={humansForEvaluator?.agreement ?? null}
-                  pairCount={humansForEvaluator?.pair_count ?? 0}
-                />
-                <SourcePill
-                  selected={selection === "evaluator"}
-                  onClick={() => setSelection("evaluator")}
-                  primaryLabel="Evaluator"
-                />
+                {!hideAgreementGlyph && hasHumans && (
+                  <AgreementGlyph
+                    perfect={humansForEvaluator?.agreement === 1}
+                    agreement={humansForEvaluator?.agreement ?? null}
+                    pairCount={humansForEvaluator?.pair_count ?? 0}
+                  />
+                )}
+                {hasEvaluatorLabel && (
+                  <SourcePill
+                    selected={selection === "evaluator"}
+                    onClick={() => setSelection("evaluator")}
+                    primaryLabel="Evaluator"
+                    monoSuffix={showVersionInSourcePill ? versionLabel : null}
+                  />
+                )}
                 {annotationPills.map((a) => {
                   const aligned = isAnnotationAligned(
                     a.value?.value,
@@ -810,7 +888,7 @@ function EvaluatorResultsPane({
               mode="read"
               name={evaluatorName}
               description={r.evaluator?.description ?? null}
-              versionLabel={versionLabel}
+              versionLabel={showVersionInSourcePill ? null : versionLabel}
               outputType={outputType}
               evaluatorUuid={ev.evaluator_id}
               enableLink={linkEvaluators}
@@ -825,7 +903,283 @@ function EvaluatorResultsPane({
             />
           </div>
         );
-      })}
+  };
+
+  if (groupVersionsByEvaluator) {
+    // Preserve input order of evaluator ids; collect versions per id.
+    const order: string[] = [];
+    const byEvaluator = new Map<string, typeof visibleEvaluators>();
+    for (const ev of visibleEvaluators) {
+      if (!byEvaluator.has(ev.evaluator_id)) {
+        order.push(ev.evaluator_id);
+        byEvaluator.set(ev.evaluator_id, []);
+      }
+      byEvaluator.get(ev.evaluator_id)!.push(ev);
+    }
+    return (
+      <div className="space-y-4">
+        {descriptionBlock}
+        {order.map((id) => (
+          <GroupedEvaluatorCard
+            key={id}
+            evaluators={byEvaluator.get(id)!}
+            runs={runs}
+            versionLabels={versionLabels}
+            evaluatorNamesById={evaluatorNamesById}
+            humanAgreementForItem={humanAgreementForItem}
+            evaluatorVariablesByEvaluatorId={evaluatorVariablesByEvaluatorId}
+            jobStatus={jobStatus}
+            linkEvaluators={linkEvaluators}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {descriptionBlock}
+      {visibleEvaluators.map((ev) => renderEvaluatorCard(ev))}
+    </div>
+  );
+}
+
+/**
+ * Single card that lets the user toggle between every version of the same
+ * evaluator AND each annotator. The version pills sit alongside the
+ * annotator pills above one shared verdict card. Used when the modal /
+ * task per-item view wants to surface multiple evaluator versions without
+ * duplicating the card.
+ */
+function GroupedEvaluatorCard({
+  evaluators,
+  runs,
+  versionLabels,
+  evaluatorNamesById,
+  humanAgreementForItem,
+  evaluatorVariablesByEvaluatorId,
+  jobStatus,
+  linkEvaluators,
+}: {
+  evaluators: {
+    evaluator_id: string;
+    evaluator_version_id?: string;
+    name?: string;
+  }[];
+  runs: EvaluatorRunRow[];
+  versionLabels: Record<string, string>;
+  evaluatorNamesById: Record<string, string>;
+  humanAgreementForItem: HumanAgreementItem | null;
+  evaluatorVariablesByEvaluatorId: Record<string, Record<string, string>>;
+  jobStatus: EvaluatorRunJob["status"];
+  linkEvaluators: boolean;
+}) {
+  const evaluatorId = evaluators[0]?.evaluator_id ?? "";
+
+  // Per-version run + label data.
+  const versions = evaluators.map((ev) => {
+    const r =
+      runs.find(
+        (x) =>
+          x.evaluator_id === ev.evaluator_id &&
+          (!ev.evaluator_version_id ||
+            x.evaluator_version_id === ev.evaluator_version_id),
+      ) ?? null;
+    const versionLabel = ev.evaluator_version_id
+      ? (versionLabels[ev.evaluator_version_id] ?? null)
+      : null;
+    const v = r?.value?.value;
+    const hasValue = v !== null && v !== undefined;
+    return { ev, r, versionLabel, hasValue };
+  });
+
+  const humansForEvaluator =
+    humanAgreementForItem?.evaluators.find(
+      (e) => e.evaluator_id === evaluatorId,
+    ) ?? null;
+  const annotations =
+    jobStatus === "completed"
+      ? (humansForEvaluator?.human_annotations ?? [])
+      : [];
+
+  const outputType: "binary" | "rating" =
+    versions.find((x) => x.r?.evaluator?.output_type === "rating")
+      ? "rating"
+      : "binary";
+
+  // Selection token: "v:<version_id>" or "a:<annotator_id>". Default to
+  // the first version with a value, then any version, then first annotator.
+  const firstVersionWithValue = versions.find((x) => x.hasValue) ?? versions[0];
+  const defaultSelection = firstVersionWithValue?.hasValue
+    ? `v:${firstVersionWithValue.ev.evaluator_version_id ?? ""}`
+    : annotations[0]
+      ? `a:${annotations[0].annotator_id}`
+      : `v:${versions[0]?.ev.evaluator_version_id ?? ""}`;
+
+  const [selection, setSelection] = useState<string>(defaultSelection);
+
+  const selectedVersion = selection.startsWith("v:")
+    ? versions.find(
+        (x) => `v:${x.ev.evaluator_version_id ?? ""}` === selection,
+      ) ?? null
+    : null;
+  const selectedAnnotation = selection.startsWith("a:")
+    ? annotations.find((a) => `a:${a.annotator_id}` === selection) ?? null
+    : null;
+
+  // The card's "anchor" run (for description, scale, output_type lookup) is
+  // either the selected version or the first version that has run data.
+  const anchorRun =
+    selectedVersion?.r ?? versions.find((x) => x.r)?.r ?? null;
+  const evaluatorName = evaluatorDisplayName(
+    evaluators[0],
+    evaluatorNamesById,
+    anchorRun,
+  );
+  const scaleMin =
+    typeof anchorRun?.evaluator_version?.scale_min === "number"
+      ? anchorRun.evaluator_version.scale_min
+      : undefined;
+  const scaleMax =
+    typeof anchorRun?.evaluator_version?.scale_max === "number"
+      ? anchorRun.evaluator_version.scale_max
+      : undefined;
+
+  const {
+    match: displayMatch,
+    score: displayScore,
+    reasoning: displayReasoning,
+  } = resolveCardDisplay(
+    selectedAnnotation
+      ? annotationToSource(selectedAnnotation)
+      : runToSource(selectedVersion?.r ?? null),
+    outputType,
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {versions.map((x) => {
+          if (!x.hasValue) return null;
+          const token = `v:${x.ev.evaluator_version_id ?? ""}`;
+          return (
+            <SourcePill
+              key={token}
+              selected={selection === token}
+              onClick={() => setSelection(token)}
+              primaryLabel="Evaluator"
+              monoSuffix={x.versionLabel}
+            />
+          );
+        })}
+        {annotations.map((a) => {
+          const token = `a:${a.annotator_id}`;
+          return (
+            <SourcePill
+              key={token}
+              primaryLabel={annotatorDisplayName(a)}
+              selected={selection === token}
+              onClick={() => setSelection(token)}
+            />
+          );
+        })}
+      </div>
+      <EvaluatorVerdictCard
+        mode="read"
+        name={evaluatorName}
+        description={anchorRun?.evaluator?.description ?? null}
+        outputType={outputType}
+        evaluatorUuid={evaluatorId}
+        enableLink={linkEvaluators}
+        variableValues={
+          evaluatorVariablesByEvaluatorId[evaluatorId] ?? null
+        }
+        match={displayMatch}
+        score={displayScore}
+        scaleMin={scaleMin}
+        scaleMax={scaleMax}
+        reasoning={displayReasoning}
+      />
+    </div>
+  );
+}
+
+/**
+ * Two-column item view: ItemPane (conversation / transcript / payload) on
+ * the left, EvaluatorResultsPane (per-evaluator cards with annotator pills)
+ * on the right. Used both by the evaluator-run detail page and the
+ * labelling-task per-item page. Stateless — caller passes the resolved item
+ * and pre-shaped evaluator / annotation data.
+ */
+export function ItemDetailPane({
+  item,
+  taskType,
+  evaluators,
+  evaluatorNamesById,
+  runs,
+  versionLabels,
+  jobStatus,
+  humanAgreementForItem,
+  evaluatorVariablesByEvaluatorId,
+  filterDisagreements = false,
+  linkEvaluators = true,
+  hideAgreementGlyph = false,
+  alwaysShowSourcePills = false,
+  showVersionInSourcePill = false,
+  groupVersionsByEvaluator = false,
+}: {
+  item: Item;
+  taskType: LabellingTaskFull["type"];
+  evaluators: {
+    evaluator_id: string;
+    evaluator_version_id?: string;
+    name?: string;
+  }[];
+  evaluatorNamesById: Record<string, string>;
+  runs: EvaluatorRunRow[];
+  versionLabels: Record<string, string>;
+  jobStatus: EvaluatorRunJob["status"];
+  humanAgreementForItem: HumanAgreementItem | null;
+  evaluatorVariablesByEvaluatorId: Record<string, Record<string, string>>;
+  filterDisagreements?: boolean;
+  linkEvaluators?: boolean;
+  hideAgreementGlyph?: boolean;
+  alwaysShowSourcePills?: boolean;
+  showVersionInSourcePill?: boolean;
+  groupVersionsByEvaluator?: boolean;
+}) {
+  const itemPayload =
+    item.payload && typeof item.payload === "object"
+      ? (item.payload as Record<string, unknown>)
+      : null;
+  const itemDescription =
+    itemPayload && typeof itemPayload.description === "string"
+      ? itemPayload.description
+      : null;
+
+  return (
+    <div className="flex flex-col md:flex-row min-h-0 flex-1 md:overflow-hidden">
+      <div className="md:flex-1 md:min-h-0 md:overflow-y-auto p-4 md:p-6 md:border-r border-border">
+        <ItemPane item={item} taskType={taskType} />
+      </div>
+      <div className="md:flex-1 md:min-h-0 md:overflow-y-auto p-4 md:p-6">
+        <EvaluatorResultsPane
+          evaluators={evaluators}
+          evaluatorNamesById={evaluatorNamesById}
+          runs={runs}
+          versionLabels={versionLabels}
+          jobStatus={jobStatus}
+          humanAgreementForItem={humanAgreementForItem}
+          evaluatorVariablesByEvaluatorId={evaluatorVariablesByEvaluatorId}
+          filterDisagreements={filterDisagreements}
+          linkEvaluators={linkEvaluators}
+          itemDescription={itemDescription}
+          hideAgreementGlyph={hideAgreementGlyph}
+          alwaysShowSourcePills={alwaysShowSourcePills}
+          showVersionInSourcePill={showVersionInSourcePill}
+          groupVersionsByEvaluator={groupVersionsByEvaluator}
+        />
+      </div>
     </div>
   );
 }
@@ -1205,26 +1559,41 @@ export function EvaluatorRunDetailView({
               </button>
             </div>
           )}
-          <header className="border-b border-border px-4 md:px-6 py-3 flex items-center justify-center gap-2">
-            <button
-              onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))}
-              disabled={currentIndex === 0 || total === 0}
-              className="h-9 px-3 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Previous
-            </button>
-            <span className="text-sm text-muted-foreground tabular-nums px-2">
-              Item {Math.min(safeIndex + 1, Math.max(total, 1))} of {total}
-            </span>
-            <button
-              onClick={() =>
-                setCurrentIndex(Math.min(total - 1, currentIndex + 1))
-              }
-              disabled={currentIndex >= total - 1 || total === 0}
-              className="h-9 px-3 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
+          <header className="border-b border-border px-4 md:px-6 py-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <h2 className="text-sm md:text-base font-semibold text-foreground truncate min-w-0">
+              {(() => {
+                const p =
+                  currentItem?.payload &&
+                  typeof currentItem.payload === "object"
+                    ? (currentItem.payload as Record<string, unknown>)
+                    : null;
+                const name =
+                  p && typeof p.name === "string" ? p.name.trim() : "";
+                return name || "Item";
+              })()}
+            </h2>
+            <div className="flex items-center gap-2 justify-self-center">
+              <button
+                onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))}
+                disabled={currentIndex === 0 || total === 0}
+                className="h-9 px-3 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-muted-foreground tabular-nums px-2">
+                Item {Math.min(safeIndex + 1, Math.max(total, 1))} of {total}
+              </span>
+              <button
+                onClick={() =>
+                  setCurrentIndex(Math.min(total - 1, currentIndex + 1))
+                }
+                disabled={currentIndex >= total - 1 || total === 0}
+                className="h-9 px-3 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+            <div />
           </header>
 
           <div className="flex flex-col md:flex-row flex-1 min-h-0">
@@ -1287,30 +1656,25 @@ export function EvaluatorRunDetailView({
                   No items in this run.
                 </div>
               ) : (
-                <>
-                  <div className="md:flex-1 md:min-h-0 md:overflow-y-auto p-4 md:p-6 md:border-r border-border">
-                    <ItemPane item={currentItem} taskType={task.type} />
-                  </div>
-                  <div className="md:flex-1 md:min-h-0 md:overflow-y-auto p-4 md:p-6">
-                    <EvaluatorResultsPane
-                      evaluators={job.details?.evaluators ?? []}
-                      evaluatorNamesById={evaluatorNamesById}
-                      runs={runsByItem[currentItem.uuid] ?? []}
-                      versionLabels={versionLabels}
-                      jobStatus={job.status}
-                      humanAgreementForItem={
-                        job.human_agreement?.items.find(
-                          (i) => i.item_id === currentItem.uuid,
-                        ) ?? null
-                      }
-                      evaluatorVariablesByEvaluatorId={extractEvaluatorVariables(
-                        currentItem.payload,
-                      )}
-                      filterDisagreements={filterDisagreements}
-                      linkEvaluators={linkEvaluators}
-                    />
-                  </div>
-                </>
+                <ItemDetailPane
+                  item={currentItem}
+                  taskType={task.type}
+                  evaluators={job.details?.evaluators ?? []}
+                  evaluatorNamesById={evaluatorNamesById}
+                  runs={runsByItem[currentItem.uuid] ?? []}
+                  versionLabels={versionLabels}
+                  jobStatus={job.status}
+                  humanAgreementForItem={
+                    job.human_agreement?.items.find(
+                      (i) => i.item_id === currentItem.uuid,
+                    ) ?? null
+                  }
+                  evaluatorVariablesByEvaluatorId={extractEvaluatorVariables(
+                    currentItem.payload,
+                  )}
+                  filterDisagreements={filterDisagreements}
+                  linkEvaluators={linkEvaluators}
+                />
               )}
             </main>
           </div>
