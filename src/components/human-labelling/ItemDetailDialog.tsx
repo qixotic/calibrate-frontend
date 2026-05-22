@@ -77,12 +77,22 @@ export function ItemDetailDialog({
   task,
   item,
   accessToken,
+  onPrev,
+  onNext,
+  hasPrev = false,
+  hasNext = false,
+  position,
 }: {
   isOpen: boolean;
   onClose: () => void;
   task: ItemDetailDialogTask | null;
   item: Item | null;
   accessToken: string | null;
+  onPrev?: () => void;
+  onNext?: () => void;
+  hasPrev?: boolean;
+  hasNext?: boolean;
+  position?: { index: number; total: number };
 }) {
   const [summary, setSummary] = useState<TaskSummaryResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -136,15 +146,37 @@ export function ItemDetailDialog({
     setSummary(null);
   }, [taskUuid, itemUuid]);
 
-  // Close on Escape.
+  // Close on Escape; navigate with arrow keys.
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      if (e.key === "ArrowLeft" && hasPrev && onPrev) {
+        e.preventDefault();
+        onPrev();
+      } else if (e.key === "ArrowRight" && hasNext && onNext) {
+        e.preventDefault();
+        onNext();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, hasPrev, hasNext, onPrev, onNext]);
 
   const evaluatorVariables = useMemo(
     () => (item ? extractEvaluatorVariables(item.payload) : {}),
@@ -340,12 +372,73 @@ export function ItemDetailDialog({
         onClick={(e) => e.stopPropagation()}
         className="bg-background rounded-none md:rounded-xl w-full max-w-[92rem] h-full md:h-[92vh] flex flex-col shadow-2xl overflow-hidden"
       >
-        <div className="flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4 border-b border-border">
+        <div className="relative flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4 border-b border-border">
           <div className="min-w-0 flex items-center gap-2 flex-wrap">
             <h2 className="text-base md:text-lg font-semibold text-foreground truncate">
               {itemTitle(item)}
             </h2>
           </div>
+          {(onPrev || onNext) && (
+            <div className="hidden md:flex absolute left-1/2 -translate-x-1/2 items-center gap-2 pointer-events-none">
+              <div className="pointer-events-auto">
+                <Tooltip position="bottom" content="Previous item">
+                  <button
+                    type="button"
+                    onClick={onPrev}
+                    disabled={!hasPrev}
+                    aria-label="Previous item"
+                    className="flex items-center justify-center w-8 h-8 rounded-md border border-border hover:bg-muted transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M15 19l-7-7 7-7"
+                      />
+                    </svg>
+                  </button>
+                </Tooltip>
+              </div>
+              {position && position.total > 0 ? (
+                <span className="text-xs text-muted-foreground tabular-nums min-w-[4rem] text-center">
+                  {position.index + 1} of {position.total}
+                </span>
+              ) : (
+                <span className="min-w-[4rem]" />
+              )}
+              <div className="pointer-events-auto">
+                <Tooltip position="bottom" content="Next item">
+                  <button
+                    type="button"
+                    onClick={onNext}
+                    disabled={!hasNext}
+                    aria-label="Next item"
+                    className="flex items-center justify-center w-8 h-8 rounded-md border border-border hover:bg-muted transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                  </button>
+                </Tooltip>
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2 shrink-0">
             {loading && summary && (
               <svg
