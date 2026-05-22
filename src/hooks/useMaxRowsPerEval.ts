@@ -22,7 +22,7 @@ function fetchMaxRows(accessToken: string): Promise<number> {
 
   if (!cachedPromise) {
     cachedPromise = apiGet<MaxRowsResponse>(
-      "/user-limits/me/max-rows-per-eval",
+      "/org-limits/me/max-rows-per-eval",
       accessToken,
     )
       .then((data) =>
@@ -40,7 +40,7 @@ function fetchMaxRows(accessToken: string): Promise<number> {
 }
 
 /**
- * Fetches the user-specific max rows per eval from the backend.
+ * Fetches the org-specific max rows per eval from the backend.
  * Starts with LIMITS.DEFAULT_MAX_ROWS_PER_EVAL and updates when the API responds.
  * All hook instances share a single cached request per access token.
  */
