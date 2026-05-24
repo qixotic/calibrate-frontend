@@ -34,20 +34,15 @@ export function BinaryScaleEditor({ rows, onChange }: Props) {
         Labels
       </label>
       <p className="text-xs md:text-sm text-muted-foreground mb-2">
-        Override the labels shown for each binary verdict. Leave blank to use
-        the defaults ({DEFAULT_BINARY_TRUE_LABEL} / {DEFAULT_BINARY_FALSE_LABEL}
-        ). The optional description is rubric text sent to the judge.
+        Set the labels shown for the binary evaluator's verdict across the task
       </p>
-      <div className="space-y-2">
+      <div className="space-y-4">
         {rows.map((row, idx) => {
           const placeholder = row.value
             ? DEFAULT_BINARY_TRUE_LABEL
             : DEFAULT_BINARY_FALSE_LABEL;
           return (
-            <div
-              key={String(row.value)}
-              className="border border-border rounded-md p-2 md:p-3 bg-muted/10 dark:bg-muted"
-            >
+            <div key={String(row.value)}>
               <div className="flex items-center gap-2">
                 <span
                   className={`w-20 h-9 md:h-10 inline-flex items-center justify-center rounded-md text-sm md:text-base font-medium border ${
@@ -68,9 +63,7 @@ export function BinaryScaleEditor({ rows, onChange }: Props) {
               </div>
               <textarea
                 value={row.description}
-                onChange={(e) =>
-                  update(idx, { description: e.target.value })
-                }
+                onChange={(e) => update(idx, { description: e.target.value })}
                 placeholder="(optional) description for the response to receive this verdict; a detailed rubric helps the LLM judge evaluate more reliably"
                 rows={3}
                 className="mt-2 w-full px-3 py-2 rounded-md text-sm border border-border bg-background dark:bg-accent text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-y min-h-[5rem]"
