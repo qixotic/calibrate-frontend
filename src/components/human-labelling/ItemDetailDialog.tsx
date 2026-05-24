@@ -69,6 +69,16 @@ type TaskSummaryResponse = {
   annotators: SummaryAnnotator[];
   evaluators?: SummaryEvaluator[];
   rows: SummaryRow[];
+  /** Item-level free-text comments, sourced from the `evaluator_id IS NULL`
+   * annotation slot. Sparse: only `(item, annotator)` pairs with a
+   * non-empty comment appear. */
+  item_comments?: { [item_id: string]: { [annotator_uuid: string]: string } };
+};
+
+export type ItemCommentEntry = {
+  annotator_id: string;
+  annotator_name: string;
+  comment: string;
 };
 
 type TaskEvaluatorDef = {
@@ -217,8 +227,10 @@ export function ItemDetailDialog({
     [item],
   );
 
-  // Annotators who actually labelled this item across any evaluator/version.
-  // We only surface the filter when this list is non-empty.
+  // Annotators who left any signal on this item — either an evaluator
+  // annotation in any row, OR a comment in `item_comments`. Comment-only
+  // annotators (no evaluator labels) need to be filterable too, otherwise
+  // the picker can't isolate their Comments block entry.
   const availableAnnotators = useMemo<PickerItem[]>(() => {
     if (!summary) return [];
     const seen = new Set<string>();
@@ -229,10 +241,16 @@ export function ItemDetailDialog({
         }
       }
     }
+    if (item) {
+      const byAnn = summary.item_comments?.[item.uuid] ?? {};
+      for (const [annUuid, c] of Object.entries(byAnn)) {
+        if (typeof c === "string" && c.trim()) seen.add(annUuid);
+      }
+    }
     return (summary.annotators ?? [])
       .filter((a) => seen.has(a.uuid))
       .map((a) => ({ uuid: a.uuid, name: a.name }));
-  }, [summary]);
+  }, [summary, item]);
 
   // Drop selections that no longer correspond to an annotator with data
   // (e.g. after the modal re-fetches with different filters) at render
@@ -256,6 +274,29 @@ export function ItemDetailDialog({
     if (effectiveSelectedAnnotators.length === 0) return null;
     return new Set(effectiveSelectedAnnotators.map((a) => a.uuid));
   }, [effectiveSelectedAnnotators]);
+
+  // Item-level comments for the current item, preserving annotator order
+  // from the summary's `annotators[]` block and dropping anyone outside
+  // the active annotator filter.
+  const itemCommentEntries = useMemo<ItemCommentEntry[]>(() => {
+    if (!summary || !item) return [];
+    const byAnn = summary.item_comments?.[item.uuid];
+    if (!byAnn) return [];
+    const entries: ItemCommentEntry[] = [];
+    for (const ann of summary.annotators ?? []) {
+      const raw = byAnn[ann.uuid];
+      if (typeof raw !== "string") continue;
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      if (annotatorFilter && !annotatorFilter.has(ann.uuid)) continue;
+      entries.push({
+        annotator_id: ann.uuid,
+        annotator_name: ann.name,
+        comment: trimmed,
+      });
+    }
+    return entries;
+  }, [summary, item, annotatorFilter]);
 
   const hasAnyLabel = useMemo(() => {
     if (!summary) return false;
@@ -732,6 +773,8 @@ export function ItemDetailDialog({
               showVersionInSourcePill
               groupVersionsByEvaluator
               annotatorFilterActive={annotatorFilter !== null}
+              singleAnnotatorFiltered={effectiveSelectedAnnotators.length === 1}
+              itemComments={itemCommentEntries}
             />
           )}
         </div>
