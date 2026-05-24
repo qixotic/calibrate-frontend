@@ -87,7 +87,10 @@ export function CreateEvaluatorSidebar({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+      />
       <div className="relative w-full md:max-w-2xl max-h-[90vh] bg-background border border-border rounded-xl flex flex-col shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b border-border">
           <div className="flex items-center gap-3">
@@ -104,7 +107,9 @@ export function CreateEvaluatorSidebar({
                 d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z"
               />
             </svg>
-            <h2 className="text-base md:text-lg font-semibold">Add evaluator</h2>
+            <h2 className="text-base md:text-lg font-semibold">
+              Add evaluator
+            </h2>
           </div>
           <button
             onClick={onClose}
@@ -117,7 +122,11 @@ export function CreateEvaluatorSidebar({
               stroke="currentColor"
               strokeWidth={2}
             >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
@@ -233,8 +242,8 @@ export function CreateEvaluatorSidebar({
               rows={evaluatorScale}
               onChange={setEvaluatorScale}
               validationAttempted={validationAttempted}
-              description="Add at least two rows. Label is required; the description is optional rubric text fed to the judge."
-              descriptionPlaceholder="(optional) description for the response to receive this rating; a detailed rubric helps the LLM judge evaluate more reliably"
+              description="Set the labels for the rating scale. Add at least two rating levels."
+              descriptionPlaceholder="(optional) Criteria for the response to receive this rating. A detailed rubric helps the LLM judge evaluate more reliably."
             />
           )}
 
@@ -251,7 +260,11 @@ export function CreateEvaluatorSidebar({
                   : "border-border"
               }`}
             >
-              <span className={judgeModel ? "text-foreground" : "text-muted-foreground"}>
+              <span
+                className={
+                  judgeModel ? "text-foreground" : "text-muted-foreground"
+                }
+              >
                 {judgeModel ? judgeModel.name : "Select judge model"}
               </span>
               <svg
@@ -261,7 +274,11 @@ export function CreateEvaluatorSidebar({
                 stroke="currentColor"
                 strokeWidth={2}
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                />
               </svg>
             </button>
           </div>
@@ -330,7 +347,9 @@ export function CreateEvaluatorSidebar({
                           }
                           placeholder="Short description explaining the purpose of the variable"
                           className={`flex-1 px-3 py-2 rounded-md text-sm bg-background dark:bg-muted text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent ${
-                            missingDescription ? "border-red-500" : "border-border"
+                            missingDescription
+                              ? "border-red-500"
+                              : "border-border"
                           }`}
                         />
                       </div>
@@ -355,29 +374,31 @@ export function CreateEvaluatorSidebar({
             />
           </div>
 
-          {!variablesSupported && evaluatorType && detectedPromptVariables.length > 0 && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs md:text-sm text-amber-700 dark:text-amber-300">
-              <svg
-                className="w-4 h-4 mt-0.5 flex-shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.75}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
-                />
-              </svg>
-              <span>
-                Variables are not supported for {EVALUATOR_TYPE_LABELS[evaluatorType]}{" "}
-                evaluators. The <code className="font-mono">{`{{...}}`}</code>{" "}
-                placeholders in your prompt will be treated as literal text by
-                the evaluator
-              </span>
-            </div>
-          )}
+          {!variablesSupported &&
+            evaluatorType &&
+            detectedPromptVariables.length > 0 && (
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs md:text-sm text-amber-700 dark:text-amber-300">
+                <svg
+                  className="w-4 h-4 mt-0.5 flex-shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.75}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+                  />
+                </svg>
+                <span>
+                  Variables are not supported for{" "}
+                  {EVALUATOR_TYPE_LABELS[evaluatorType]} evaluators. The{" "}
+                  <code className="font-mono">{`{{...}}`}</code> placeholders in
+                  your prompt will be treated as literal text by the evaluator
+                </span>
+              </div>
+            )}
           <div className="h-4 md:h-6 shrink-0" aria-hidden="true" />
         </div>
 

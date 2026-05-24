@@ -29,10 +29,7 @@ import {
   defaultBinaryScale,
   type BinaryScaleRow,
 } from "@/components/evaluators/BinaryScaleEditor";
-import {
-  coerceBinaryValue,
-  defaultBinaryLabel,
-} from "@/lib/binaryLabels";
+import { coerceBinaryValue, defaultBinaryLabel } from "@/lib/binaryLabels";
 import { liveVersionOf } from "@/lib/evaluatorVersions";
 import { VersionCard } from "@/components/evaluators/VersionCard";
 import { extractVariableNames } from "@/lib/evaluatorVariables";
@@ -142,7 +139,11 @@ type EvaluatorTrendResponse = {
   bucket: string;
   days: number;
   filters: { task_id: string | null; version_id: string | null };
-  overall: { current: number | null; pair_count: number; series: TrendSeriesPoint[] };
+  overall: {
+    current: number | null;
+    pair_count: number;
+    series: TrendSeriesPoint[];
+  };
   versions: TrendVersion[];
   tasks: TrendTask[];
 };
@@ -172,7 +173,8 @@ function EvaluatorDetailPageInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [settingLiveUuid, setSettingLiveUuid] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<EvaluatorPageTab>(resolvedInitialTab);
+  const [activeTab, setActiveTab] =
+    useState<EvaluatorPageTab>(resolvedInitialTab);
 
   const handleTabChange = useCallback((tab: EvaluatorPageTab) => {
     setActiveTab(tab);
@@ -204,9 +206,8 @@ function EvaluatorDetailPageInner() {
   const [newVersionScale, setNewVersionScale] = useState<
     { value: number | string; name: string; description: string }[]
   >([]);
-  const [newVersionBinaryScale, setNewVersionBinaryScale] = useState<
-    BinaryScaleRow[]
-  >(defaultBinaryScale());
+  const [newVersionBinaryScale, setNewVersionBinaryScale] =
+    useState<BinaryScaleRow[]>(defaultBinaryScale());
   const [newVersionLlmModalOpen, setNewVersionLlmModalOpen] = useState(false);
   const [newVersionSaving, setNewVersionSaving] = useState(false);
   const [newVersionError, setNewVersionError] = useState<string | null>(null);
@@ -799,8 +800,8 @@ function EvaluatorDetailPageInner() {
             </div>
 
             {/* Prompts tab content */}
-            {activeTab === "prompts" && (
-              versions.length > 0 ? (
+            {activeTab === "prompts" &&
+              (versions.length > 0 ? (
                 <div className="space-y-3 md:space-y-4">
                   {versions.map((v) => (
                     <VersionCard
@@ -821,8 +822,7 @@ function EvaluatorDetailPageInner() {
                     No version configured yet
                   </p>
                 </div>
-              )
-            )}
+              ))}
 
             {/* Agreement tab content */}
             {activeTab === "agreement" && (
@@ -959,9 +959,7 @@ function EvaluatorDetailPageInner() {
       {/* New version dialog */}
       {newVersionOpen && evaluator && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div
-            className="bg-background border border-border rounded-xl w-full max-w-[96rem] shadow-2xl flex flex-col max-h-[90vh]"
-          >
+          <div className="bg-background border border-border rounded-xl w-full max-w-[96rem] shadow-2xl flex flex-col max-h-[90vh]">
             {/* Header */}
             <div className="flex items-center justify-between px-5 md:px-6 py-4 border-b border-border">
               <h2 className="text-base md:text-lg font-semibold text-foreground">
@@ -1000,9 +998,7 @@ function EvaluatorDetailPageInner() {
                   </label>
                   <textarea
                     value={newVersionSystemPrompt}
-                    onChange={(e) =>
-                      setNewVersionSystemPrompt(e.target.value)
-                    }
+                    onChange={(e) => setNewVersionSystemPrompt(e.target.value)}
                     placeholder={
                       evaluator.evaluator_type === "llm"
                         ? "Describe how the judge should grade a response. Reference existing variables with {{name}}."
@@ -1023,8 +1019,8 @@ function EvaluatorDetailPageInner() {
                       rows={newVersionScale}
                       onChange={setNewVersionScale}
                       validationAttempted={newVersionValidated}
-                      description="At least two rows. Description is optional rubric text sent to the judge."
-                      descriptionPlaceholder="Description (optional) - criteria for this level, shown to the judge"
+                      description="Set the labels for the rating scale"
+                      descriptionPlaceholder="(optional) Criteria for the response to receive this rating. A detailed rubric helps the LLM judge evaluate more reliably"
                     />
                   )}
 
@@ -1067,7 +1063,8 @@ function EvaluatorDetailPageInner() {
                         Mark the new version as the live version
                       </span>
                       <span className="text-xs md:text-sm text-emerald-700/75 dark:text-emerald-300/75">
-                        New tests will use this prompt version after it is created
+                        New tests will use this prompt version after it is
+                        created
                       </span>
                     </span>
                   </label>
@@ -1452,9 +1449,14 @@ function AgreementTrendTab({
   allTasks: TrendTask[];
 }) {
   const { chartData, liveLabels } = useMemo(() => {
-    if (!trend?.versions?.length) return { chartData: [], liveLabels: new Set<string>() };
-    const sorted = [...trend.versions].sort((a, b) => a.version_number - b.version_number);
-    const liveSet = new Set(sorted.filter((v) => v.is_live).map((v) => `v${v.version_number}`));
+    if (!trend?.versions?.length)
+      return { chartData: [], liveLabels: new Set<string>() };
+    const sorted = [...trend.versions].sort(
+      (a, b) => a.version_number - b.version_number,
+    );
+    const liveSet = new Set(
+      sorted.filter((v) => v.is_live).map((v) => `v${v.version_number}`),
+    );
     return {
       chartData: sorted.map((v) => ({
         version: `v${v.version_number}`,
@@ -1488,28 +1490,30 @@ function AgreementTrendTab({
               versions
             </p>
           </div>
-          {allTasks.length > 0 && <SingleSelectPicker
-            items={taskPickerItems}
-            selectedId={trendTaskId}
-            onSelect={(item) => onSelectTask(item.id)}
-            getId={(item) => item.id}
-            renderTrigger={(item) => (
-              <span className="text-sm truncate">
-                {item?.name ?? "All tasks"}
-              </span>
-            )}
-            renderOption={(item, isSelected) => (
-              <span
-                className={`text-sm truncate ${isSelected ? "font-medium" : ""}`}
-              >
-                {item.name}
-              </span>
-            )}
-            matchesSearch={(item, q) =>
-              item.name.toLowerCase().includes(q.toLowerCase())
-            }
-            className="w-48"
-          />}
+          {allTasks.length > 0 && (
+            <SingleSelectPicker
+              items={taskPickerItems}
+              selectedId={trendTaskId}
+              onSelect={(item) => onSelectTask(item.id)}
+              getId={(item) => item.id}
+              renderTrigger={(item) => (
+                <span className="text-sm truncate">
+                  {item?.name ?? "All tasks"}
+                </span>
+              )}
+              renderOption={(item, isSelected) => (
+                <span
+                  className={`text-sm truncate ${isSelected ? "font-medium" : ""}`}
+                >
+                  {item.name}
+                </span>
+              )}
+              matchesSearch={(item, q) =>
+                item.name.toLowerCase().includes(q.toLowerCase())
+              }
+              className="w-48"
+            />
+          )}
         </div>
       )}
 
@@ -1586,9 +1590,7 @@ function AgreementTrendTab({
                     borderRadius: 8,
                     fontSize: 12,
                   }}
-                  formatter={(value) =>
-                    value == null ? "—" : `${value}%`
-                  }
+                  formatter={(value) => (value == null ? "—" : `${value}%`)}
                 />
                 <Line
                   type="monotone"

@@ -34,7 +34,7 @@ export function BinaryScaleEditor({ rows, onChange }: Props) {
         Labels
       </label>
       <p className="text-xs md:text-sm text-muted-foreground mb-2">
-        Set the labels shown for the binary evaluator's verdict across the task
+        Set the labels shown for Yes/No across the task
       </p>
       <div className="space-y-4">
         {rows.map((row, idx) => {
@@ -64,7 +64,7 @@ export function BinaryScaleEditor({ rows, onChange }: Props) {
               <textarea
                 value={row.description}
                 onChange={(e) => update(idx, { description: e.target.value })}
-                placeholder="(optional) description for the response to receive this verdict; a detailed rubric helps the LLM judge evaluate more reliably"
+                placeholder="(optional) Criteria for the response to receive this rating. A detailed rubric helps the LLM judge evaluate more reliably."
                 rows={3}
                 className="mt-2 w-full px-3 py-2 rounded-md text-sm border border-border bg-background dark:bg-accent text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-y min-h-[5rem]"
               />
