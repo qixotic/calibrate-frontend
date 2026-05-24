@@ -20,6 +20,11 @@ import {
 import { LLMSelectorModal } from "@/components/agent-tabs/LLMSelectorModal";
 import type { LLMModel } from "@/components/agent-tabs/constants/providers";
 import { CreateEvaluatorSidebar } from "@/components/evaluators/CreateEvaluatorSidebar";
+import {
+  defaultBinaryScale,
+  type BinaryScaleRow,
+} from "@/components/evaluators/BinaryScaleEditor";
+import { defaultBinaryLabel } from "@/lib/binaryLabels";
 import { UseCasePickerDialog } from "@/components/evaluators/UseCasePickerDialog";
 import { extractVariableNames } from "@/lib/evaluatorVariables";
 import { useSidebarState } from "@/lib/sidebar";
@@ -38,6 +43,33 @@ type EvaluatorData = {
 };
 
 type EvaluatorTab = "default" | "mine";
+
+// Build the output_config payload for a binary evaluator. We only send a
+// `scale` when the user has actually overridden at least one label or
+// description — otherwise the backend defaults (Pass/Fail-shaped) stay in
+// effect. Returns either {} or { output_config: { scale: [...] } } so it
+// can be spread inline.
+function buildBinaryOutputConfig(rows: BinaryScaleRow[]): {
+  output_config?: {
+    scale: { value: boolean; name: string; description?: string }[];
+  };
+} {
+  const hasAnyOverride = rows.some(
+    (r) => r.name.trim().length > 0 || r.description.trim().length > 0,
+  );
+  if (!hasAnyOverride) return {};
+  return {
+    output_config: {
+      scale: rows.map((r) => ({
+        value: r.value,
+        name: r.name.trim() || defaultBinaryLabel(r.value),
+        ...(r.description.trim()
+          ? { description: r.description.trim() }
+          : {}),
+      })),
+    },
+  };
+}
 
 const EVALUATOR_TYPE_TO_DATA_TYPE: Record<EvaluatorType, "text" | "audio"> = {
   tts: "audio",
@@ -198,6 +230,9 @@ function MetricsPageInner() {
     { value: 2, name: "", description: "" },
     { value: 3, name: "", description: "" },
   ]);
+  const [newEvaluatorBinaryScale, setNewEvaluatorBinaryScale] = useState<
+    BinaryScaleRow[]
+  >(defaultBinaryScale());
 
   // Delete confirmation state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -357,6 +392,11 @@ function MetricsPageInner() {
           })),
         );
       }
+
+      // Intentionally do NOT seed the binary scale from the use case
+      // default. Correct / Wrong are the defaults — placeholders surface
+      // them so the user can override either and we only send a
+      // scale payload when they do.
     } catch (err) {
       console.error("Error prefilling default prompt:", err);
     }
@@ -483,6 +523,7 @@ function MetricsPageInner() {
       { value: 2, name: "", description: "" },
       { value: 3, name: "", description: "" },
     ]);
+    setNewEvaluatorBinaryScale(defaultBinaryScale());
   };
 
   // Check if the name already exists in the visible evaluator namespace.
@@ -570,7 +611,7 @@ function MetricsPageInner() {
                     })),
                   },
                 }
-              : {}),
+              : buildBinaryOutputConfig(newEvaluatorBinaryScale)),
           },
         }),
       });
@@ -984,6 +1025,7 @@ function MetricsPageInner() {
         evaluatorType={newEvaluatorType}
         evaluatorOutputType={newEvaluatorOutputType}
         evaluatorScale={newEvaluatorScale}
+        evaluatorBinaryScale={newEvaluatorBinaryScale}
         judgeModel={newEvaluatorJudgeModel}
         systemPrompt={newEvaluatorSystemPrompt}
         detectedPromptVariables={detectedPromptVariables}
@@ -1008,6 +1050,7 @@ function MetricsPageInner() {
         setEvaluatorDescription={setEvaluatorDescription}
         setEvaluatorOutputType={setNewEvaluatorOutputType}
         setEvaluatorScale={setNewEvaluatorScale}
+        setEvaluatorBinaryScale={setNewEvaluatorBinaryScale}
         setSystemPrompt={setNewEvaluatorSystemPrompt}
         setVariableDescriptions={setNewEvaluatorVariableDescriptions}
         setCreateNameError={setCreateNameError}

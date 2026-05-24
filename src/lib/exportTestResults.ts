@@ -3,6 +3,7 @@ import type {
   TestCaseHistory,
   TestCaseOutput,
   JudgeResult,
+  TestRunEvaluator,
 } from "@/components/test-results/shared";
 import type { ExportColumn } from "@/components/ExportResultsButton";
 
@@ -61,26 +62,35 @@ function isToolCallTest(
   return !!output?.tool_calls && output.tool_calls.length > 0;
 }
 
-// Format a single evaluator verdict: "true"/"false" for binary, "score/max"
-// for rating (or "score" when scale_max is unknown), empty string when the
-// evaluator has no result on this row.
-function evaluatorVerdict(jr: JudgeResult | undefined): string {
+// Format a single evaluator verdict: "true"/"false" for binary,
+// "score/max" for rating (or "score" when scale_max is unknown), empty
+// string when the evaluator has no result on this row. `scale_max` is
+// resolved from the top-level evaluator entry (now the source of truth
+// for evaluator metadata).
+function evaluatorVerdict(
+  jr: JudgeResult | undefined,
+  evaluator: TestRunEvaluator | undefined,
+): string {
   if (!jr) return "";
   if (jr.match !== null && jr.match !== undefined) {
     return jr.match ? "true" : "false";
   }
   if (jr.score !== null && jr.score !== undefined) {
-    return typeof jr.scale_max === "number"
-      ? `${jr.score}/${jr.scale_max}`
+    return typeof evaluator?.scale_max === "number"
+      ? `${jr.score}/${evaluator.scale_max}`
       : String(jr.score);
   }
   return "";
 }
 
-// Stable key for an evaluator: prefer uuid (canonical across runs), fall
-// back to name for legacy snapshots that pre-date uuid capture.
-function evaluatorKey(jr: JudgeResult): string {
-  return jr.evaluator_uuid ? `uuid:${jr.evaluator_uuid}` : `name:${jr.name}`;
+// Stable key for an evaluator. Prefers the uuid (canonical across
+// runs); for legacy snapshots that omit `evaluator_uuid` falls back to
+// the evaluator's position within the row's judge_results array — this
+// keeps multi-evaluator legacy rows from collapsing into one CSV
+// column. Position is stable across rows because the backend emits
+// judge_results in the same evaluator order on every row.
+function evaluatorKey(jr: JudgeResult, indexInRow: number): string {
+  return jr.evaluator_uuid ? `uuid:${jr.evaluator_uuid}` : `pos:${indexInRow}`;
 }
 
 // Walk every row's `judgeResults` and build the union of evaluators present
@@ -99,6 +109,7 @@ type EvaluatorColumn = {
 
 function collectEvaluatorColumns(
   rows: Array<{ judgeResults?: JudgeResult[] | null }>,
+  evaluatorsByUuid: Record<string, TestRunEvaluator>,
 ): EvaluatorColumn[] {
   const seen = new Map<string, EvaluatorColumn>();
   const variableSets = new Map<string, Set<string>>();
@@ -107,11 +118,15 @@ function collectEvaluatorColumns(
   for (const row of rows) {
     const jrs = row.judgeResults;
     if (!Array.isArray(jrs)) continue;
-    for (const jr of jrs) {
-      const key = evaluatorKey(jr);
+    for (let i = 0; i < jrs.length; i++) {
+      const jr = jrs[i];
+      const key = evaluatorKey(jr, i);
       if (!seen.has(key)) {
         // Disambiguate when two distinct evaluators share a display name.
-        const baseName = jr.name || "Evaluator";
+        const evName = jr.evaluator_uuid
+          ? evaluatorsByUuid[jr.evaluator_uuid]?.name
+          : undefined;
+        const baseName = evName || "Evaluator";
         const count = (nameCounts.get(baseName) ?? 0) + 1;
         nameCounts.set(baseName, count);
         const displayName = count === 1 ? baseName : `${baseName} (${count})`;
@@ -161,15 +176,21 @@ function buildEvaluatorColumnSpecs(cols: EvaluatorColumn[]): ExportColumn[] {
 function evaluatorCellsForRow(
   judgeResults: JudgeResult[] | null | undefined,
   cols: EvaluatorColumn[],
+  evaluatorsByUuid: Record<string, TestRunEvaluator>,
 ): Record<string, string> {
   const byKey = new Map<string, JudgeResult>();
   if (Array.isArray(judgeResults)) {
-    for (const jr of judgeResults) byKey.set(evaluatorKey(jr), jr);
+    for (let i = 0; i < judgeResults.length; i++) {
+      byKey.set(evaluatorKey(judgeResults[i], i), judgeResults[i]);
+    }
   }
   const out: Record<string, string> = {};
   for (const c of cols) {
     const jr = byKey.get(c.matchKey);
-    out[c.valueKey] = evaluatorVerdict(jr);
+    const ev = jr?.evaluator_uuid
+      ? evaluatorsByUuid[jr.evaluator_uuid]
+      : undefined;
+    out[c.valueKey] = evaluatorVerdict(jr, ev);
     for (const varName of c.variableNames) {
       out[`eval:${c.matchKey}/var:${varName}`] =
         jr?.variable_values?.[varName] ?? "";
@@ -179,7 +200,10 @@ function evaluatorCellsForRow(
   return out;
 }
 
-export function buildTestRunCsv(results: ExportTestRow[]): {
+export function buildTestRunCsv(
+  results: ExportTestRow[],
+  evaluatorsByUuid: Record<string, TestRunEvaluator> = {},
+): {
   columns: ExportColumn[];
   rows: Record<string, unknown>[];
 } {
@@ -189,7 +213,7 @@ export function buildTestRunCsv(results: ExportTestRow[]): {
 
   const flags = filtered.map((r) => isToolCallTest(r.testCase, r.output));
   const hasToolCall = flags.some(Boolean);
-  const evalCols = collectEvaluatorColumns(filtered);
+  const evalCols = collectEvaluatorColumns(filtered, evaluatorsByUuid);
 
   const columns: ExportColumn[] = [
     { key: "name", header: "name" },
@@ -224,14 +248,21 @@ export function buildTestRunCsv(results: ExportTestRow[]): {
             tool_call_reasoning: isToolCall ? (r.reasoning ?? "") : "",
           }
         : {}),
-      ...evaluatorCellsForRow(isToolCall ? null : r.judgeResults, evalCols),
+      ...evaluatorCellsForRow(
+        isToolCall ? null : r.judgeResults,
+        evalCols,
+        evaluatorsByUuid,
+      ),
     };
   });
 
   return { columns, rows };
 }
 
-export function buildBenchmarkCsv(rows: ExportBenchmarkRow[]): {
+export function buildBenchmarkCsv(
+  rows: ExportBenchmarkRow[],
+  evaluatorsByUuid: Record<string, TestRunEvaluator> = {},
+): {
   columns: ExportColumn[];
   rows: Record<string, unknown>[];
 } {
@@ -239,7 +270,7 @@ export function buildBenchmarkCsv(rows: ExportBenchmarkRow[]): {
 
   const flags = filtered.map((r) => isToolCallTest(r.testCase, r.output));
   const hasToolCall = flags.some(Boolean);
-  const evalCols = collectEvaluatorColumns(filtered);
+  const evalCols = collectEvaluatorColumns(filtered, evaluatorsByUuid);
 
   const columns: ExportColumn[] = [
     { key: "model", header: "model" },
@@ -270,7 +301,11 @@ export function buildBenchmarkCsv(rows: ExportBenchmarkRow[]): {
             tool_call_reasoning: isToolCall ? (r.reasoning ?? "") : "",
           }
         : {}),
-      ...evaluatorCellsForRow(isToolCall ? null : r.judgeResults, evalCols),
+      ...evaluatorCellsForRow(
+        isToolCall ? null : r.judgeResults,
+        evalCols,
+        evaluatorsByUuid,
+      ),
     };
   });
 

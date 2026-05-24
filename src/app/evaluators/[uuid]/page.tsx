@@ -24,6 +24,16 @@ import {
 import { LLMSelectorModal } from "@/components/agent-tabs/LLMSelectorModal";
 import type { LLMModel } from "@/components/agent-tabs/constants/providers";
 import { RatingScaleEditor } from "@/components/evaluators/RatingScaleEditor";
+import {
+  BinaryScaleEditor,
+  defaultBinaryScale,
+  type BinaryScaleRow,
+} from "@/components/evaluators/BinaryScaleEditor";
+import {
+  coerceBinaryValue,
+  defaultBinaryLabel,
+} from "@/lib/binaryLabels";
+import { liveVersionOf } from "@/lib/evaluatorVersions";
 import { VersionCard } from "@/components/evaluators/VersionCard";
 import { extractVariableNames } from "@/lib/evaluatorVariables";
 import { SingleSelectPicker } from "@/components/SingleSelectPicker";
@@ -94,7 +104,10 @@ type EvaluatorDetail = {
   owner_user_id: string | null;
   slug: string | null;
   live_version_id: string | null;
-  live_version: EvaluatorVersion | null;
+  // Index into `versions[]` for the live version. Replaces the
+  // previously flattened `live_version` blob to keep the response
+  // smaller / DRY.
+  live_version_index: number | null;
   versions?: EvaluatorVersion[];
   evaluator_type?: EvaluatorType;
 };
@@ -191,6 +204,9 @@ function EvaluatorDetailPageInner() {
   const [newVersionScale, setNewVersionScale] = useState<
     { value: number | string; name: string; description: string }[]
   >([]);
+  const [newVersionBinaryScale, setNewVersionBinaryScale] = useState<
+    BinaryScaleRow[]
+  >(defaultBinaryScale());
   const [newVersionLlmModalOpen, setNewVersionLlmModalOpen] = useState(false);
   const [newVersionSaving, setNewVersionSaving] = useState(false);
   const [newVersionError, setNewVersionError] = useState<string | null>(null);
@@ -262,9 +278,10 @@ function EvaluatorDetailPageInner() {
     if (!evaluator) return [] as EvaluatorVersion[];
     const all = evaluator.versions?.length
       ? [...evaluator.versions]
-      : evaluator.live_version
-        ? [evaluator.live_version]
-        : [];
+      : (() => {
+          const live = liveVersionOf(evaluator);
+          return live ? [live] : [];
+        })();
     const sorted = all.sort((a, b) => b.version_number - a.version_number);
     // Default evaluators always show only the most recent version of the prompt.
     if (!evaluator.owner_user_id) {
@@ -380,7 +397,7 @@ function EvaluatorDetailPageInner() {
 
   const openNewVersionDialog = () => {
     if (!evaluator) return;
-    const live = evaluator.live_version;
+    const live = liveVersionOf(evaluator);
     setNewVersionJudgeModel(
       live?.judge_model
         ? { id: live.judge_model, name: live.judge_model }
@@ -403,6 +420,28 @@ function EvaluatorDetailPageInner() {
     } else {
       setNewVersionScale([]);
     }
+    if (evaluator.output_type === "binary") {
+      // Coerce so legacy/alternate encodings (1/0, "true"/"false") still
+      // match — otherwise the form would render blank and silently drop
+      // the existing labels on save.
+      const scale = live?.output_config?.scale ?? [];
+      const trueEntry = scale.find((e) => coerceBinaryValue(e.value) === true);
+      const falseEntry = scale.find(
+        (e) => coerceBinaryValue(e.value) === false,
+      );
+      setNewVersionBinaryScale([
+        {
+          value: true,
+          name: trueEntry?.name ?? "",
+          description: trueEntry?.description ?? "",
+        },
+        {
+          value: false,
+          name: falseEntry?.name ?? "",
+          description: falseEntry?.description ?? "",
+        },
+      ]);
+    }
     setNewVersionError(null);
     setNewVersionValidated(false);
     setNewVersionChangelog("");
@@ -424,7 +463,7 @@ function EvaluatorDetailPageInner() {
       evaluator.output_type === "binary" ||
       (newVersionScale.length >= 2 &&
         newVersionScale.every((r) => r.name.trim().length > 0));
-    const existingVariables = evaluator.live_version?.variables ?? [];
+    const existingVariables = liveVersionOf(evaluator)?.variables ?? [];
     const variableDescriptionsValid =
       evaluator.evaluator_type !== "llm" ||
       existingVariables.every(
@@ -464,6 +503,21 @@ function EvaluatorDetailPageInner() {
               : {}),
           })),
         };
+      } else if (evaluator.output_type === "binary") {
+        const hasAnyOverride = newVersionBinaryScale.some(
+          (r) => r.name.trim().length > 0 || r.description.trim().length > 0,
+        );
+        if (hasAnyOverride) {
+          body.output_config = {
+            scale: newVersionBinaryScale.map((r) => ({
+              value: r.value,
+              name: r.name.trim() || defaultBinaryLabel(r.value),
+              ...(r.description.trim()
+                ? { description: r.description.trim() }
+                : {}),
+            })),
+          };
+        }
       }
       // Variable name set is pinned to the live version (we don't allow add /
       // rename / remove on a new version — see the amber callout in the UI).
@@ -471,7 +525,7 @@ function EvaluatorDetailPageInner() {
       // descriptions and preserve `default`. Only LLM evaluators can carry
       // variables; for other types we omit the field entirely.
       if (evaluator.evaluator_type === "llm") {
-        const existing = evaluator.live_version?.variables ?? [];
+        const existing = liveVersionOf(evaluator)?.variables ?? [];
         if (existing.length > 0) {
           body.variables = existing.map((v) => {
             const description = (
@@ -906,7 +960,7 @@ function EvaluatorDetailPageInner() {
       {newVersionOpen && evaluator && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div
-            className="bg-background border border-border rounded-xl w-full max-w-5xl shadow-2xl flex flex-col max-h-[90vh]"
+            className="bg-background border border-border rounded-xl w-full max-w-[96rem] shadow-2xl flex flex-col max-h-[90vh]"
           >
             {/* Header */}
             <div className="flex items-center justify-between px-5 md:px-6 py-4 border-b border-border">
@@ -938,7 +992,7 @@ function EvaluatorDetailPageInner() {
 
             {/* Body */}
             <div className="flex-1 overflow-y-auto px-5 md:px-6 py-4 md:py-5 space-y-4 md:space-y-5">
-              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] gap-4 md:gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)_minmax(300px,0.9fr)] gap-4 md:gap-6">
                 {/* Left column — Prompt */}
                 <div>
                   <label className="block text-xs md:text-sm font-medium mb-2">
@@ -960,6 +1014,26 @@ function EvaluatorDetailPageInner() {
                         : "border-border"
                     }`}
                   />
+                </div>
+
+                {/* Middle column — Labels (rating scale / binary labels) */}
+                <div className="space-y-4 md:space-y-5">
+                  {evaluator.output_type === "rating" && (
+                    <RatingScaleEditor
+                      rows={newVersionScale}
+                      onChange={setNewVersionScale}
+                      validationAttempted={newVersionValidated}
+                      description="At least two rows. Description is optional rubric text sent to the judge."
+                      descriptionPlaceholder="Description (optional) - criteria for this level, shown to the judge"
+                    />
+                  )}
+
+                  {evaluator.output_type === "binary" && (
+                    <BinaryScaleEditor
+                      rows={newVersionBinaryScale}
+                      onChange={setNewVersionBinaryScale}
+                    />
+                  )}
                 </div>
 
                 {/* Right column — Version settings */}
@@ -1038,19 +1112,9 @@ function EvaluatorDetailPageInner() {
                     </button>
                   </div>
 
-                  {evaluator.output_type === "rating" && (
-                    <RatingScaleEditor
-                      rows={newVersionScale}
-                      onChange={setNewVersionScale}
-                      validationAttempted={newVersionValidated}
-                      description="At least two rows. Description is optional rubric text sent to the judge."
-                      descriptionPlaceholder="Description (optional) - criteria for this level, shown to the judge"
-                    />
-                  )}
-
                   {(() => {
                     const existingVariables =
-                      evaluator.live_version?.variables ?? [];
+                      liveVersionOf(evaluator)?.variables ?? [];
                     const detected = extractVariableNames(
                       newVersionSystemPrompt,
                     );

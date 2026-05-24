@@ -1,6 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { getBinaryLabel } from "@/lib/binaryLabels";
+
+// Pixel height used as the collapsed cap for prompt bodies. Matches the
+// max-h-[7.5rem] applied to the <pre> below (7.5rem at 16px root).
+const COLLAPSED_PROMPT_HEIGHT_PX = 120;
 
 type ScaleEntry = {
   value: boolean | number | string;
@@ -45,6 +50,28 @@ export function VersionCard({
 }: VersionCardProps) {
   const [promptVisible, setPromptVisible] = useState(isLive || isDefault);
   const [copied, setCopied] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  // Whether the rendered prompt actually overflows the collapsed height.
+  // Measured (not derived from \n count) so prompts with long wrapping
+  // lines and no line breaks still get the toggle.
+  const [isPromptOverflowing, setIsPromptOverflowing] = useState(false);
+  const promptRef = useRef<HTMLPreElement>(null);
+
+  useLayoutEffect(() => {
+    if (!promptVisible) return;
+    const el = promptRef.current;
+    if (!el) return;
+    const measure = () => {
+      // Compare the natural scroll height (clamp ignored) against the
+      // collapsed cap. ResizeObserver re-fires on any layout change so
+      // we stay correct after font load, window resize, etc.
+      setIsPromptOverflowing(el.scrollHeight > COLLAPSED_PROMPT_HEIGHT_PX + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [promptVisible, version.system_prompt]);
 
   useEffect(() => {
     setPromptVisible(isLive || isDefault);
@@ -145,9 +172,66 @@ export function VersionCard({
             </button>
           )}
         </div>
-        <pre className="border border-border rounded-md p-3 md:p-4 bg-muted/10 text-sm text-foreground whitespace-pre-wrap font-mono leading-relaxed overflow-x-auto">
-          {version.system_prompt}
-        </pre>
+        <div className="relative">
+          <pre
+            ref={promptRef}
+            className={`border border-border rounded-md p-3 md:p-4 bg-muted/10 text-sm text-foreground whitespace-pre-wrap font-mono leading-relaxed overflow-x-auto ${
+              isPromptOverflowing && !promptExpanded
+                ? "max-h-[7.5rem] overflow-hidden"
+                : ""
+            }`}
+          >
+            {version.system_prompt}
+          </pre>
+          {isPromptOverflowing && !promptExpanded && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 flex items-end justify-center rounded-b-md bg-gradient-to-t from-background via-background/85 to-transparent">
+              <button
+                type="button"
+                onClick={() => setPromptExpanded(true)}
+                className="pointer-events-auto mb-2 inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border bg-background text-foreground hover:bg-muted transition-colors cursor-pointer shadow-sm"
+              >
+                View more
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                  />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+        {isPromptOverflowing && promptExpanded && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setPromptExpanded(false)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border bg-background text-foreground hover:bg-muted transition-colors cursor-pointer shadow-sm"
+            >
+              View less
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4.5 15.75l7.5-7.5 7.5 7.5"
+                />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>}
 
       {version.variables?.length ? (
@@ -205,6 +289,56 @@ export function VersionCard({
           </div>
         </div>
       ) : null}
+
+      {promptVisible && outputType === "binary" ? (() => {
+        const scale = version.output_config?.scale ?? [];
+        const trueEntry = scale.find((e) => e.value === true);
+        const falseEntry = scale.find((e) => e.value === false);
+        const rows = [
+          {
+            value: true,
+            label: getBinaryLabel(scale, true),
+            description: trueEntry?.description,
+          },
+          {
+            value: false,
+            label: getBinaryLabel(scale, false),
+            description: falseEntry?.description,
+          },
+        ];
+        return (
+          <div className="space-y-2">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Output
+            </div>
+            <div className="border border-border rounded-md p-3 md:p-4 bg-muted/10 space-y-2">
+              {rows.map((row) => (
+                <div key={String(row.value)} className="flex items-start gap-3">
+                  <span
+                    className={`inline-flex items-center justify-center min-w-[48px] h-6 px-2 rounded-md text-xs font-semibold border ${
+                      row.value
+                        ? "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400"
+                        : "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400"
+                    }`}
+                  >
+                    {row.value ? "True" : "False"}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-foreground">
+                      {row.label}
+                    </div>
+                    {row.description && (
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {row.description}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })() : null}
 
       {promptVisible && outputType === "rating" && version.output_config?.scale?.length ? (
         <div className="space-y-2">

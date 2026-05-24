@@ -11,6 +11,7 @@ import {
   type EvaluatorRunRow,
   type HumanAgreementItem,
   type HumanAnnotation,
+  type JobEvaluator,
 } from "@/components/human-labelling/EvaluatorRunDetailView";
 
 type SummaryAnnotator = { uuid: string; name: string };
@@ -22,20 +23,44 @@ type SummaryRow = {
   item_id: string;
   payload: Record<string, unknown> | null;
   evaluator_id: string;
-  evaluator_name: string;
-  output_type: "binary" | "rating";
   evaluator_version_id?: string | null;
-  evaluator_version_number?: number | null;
   evaluator_value: boolean | number | null;
+  // Backend-resolved label for the row's score (e.g. "Helpful" for a
+  // rating of 4 against a custom-labelled rating evaluator).
+  evaluator_value_name?: string | null;
   evaluator_reasoning?: string | null;
   human_agreement: number | null;
   evaluator_agreement: number | null;
   annotations: Record<string, SummaryAnnotation | null>;
 };
+// Top-level evaluator entry — carries name / description / output_type
+// and the full version history. Per-version scale + output_config live
+// inside `versions[]`; the row's `evaluator_version_id` keys back in.
+type SummaryEvaluatorVersion = {
+  uuid: string;
+  version_number: number;
+  output_config?: {
+    scale?: {
+      value: boolean | number | string;
+      name?: string | null;
+      description?: string | null;
+      color?: string | null;
+    }[];
+  } | null;
+  scale_min?: number | null;
+  scale_max?: number | null;
+  is_live?: boolean;
+};
 type SummaryEvaluator = {
-  evaluator_id: string;
-  name?: string;
-  output_type?: "binary" | "rating";
+  uuid: string;
+  name: string;
+  description?: string | null;
+  output_type: "binary" | "rating";
+  evaluator_type?: string;
+  data_type?: string;
+  live_version_id?: string | null;
+  live_version_index?: number | null;
+  versions?: SummaryEvaluatorVersion[];
   // Total runs for this evaluator across every version, restricted to the
   // items in scope. Unaffected by `live_only`.
   run_count?: number;
@@ -49,8 +74,17 @@ type TaskSummaryResponse = {
 type TaskEvaluatorDef = {
   uuid: string;
   description?: string | null;
+  output_type?: "binary" | "rating" | null;
   scale_min?: number | boolean | null;
   scale_max?: number | boolean | null;
+  output_config?: {
+    scale?: {
+      value: boolean | number | string;
+      name?: string | null;
+      description?: string | null;
+      color?: string | null;
+    }[];
+  } | null;
 };
 
 function itemTitle(item: Item | null): string {
@@ -239,6 +273,13 @@ export function ItemDetailDialog({
     const taskEvaluatorByUuid = new Map(
       (task.evaluators ?? []).map((e) => [e.uuid, e]),
     );
+    // Top-level evaluators block from the new summary response. Each
+    // entry carries the full version history; per-row evaluator metadata
+    // (name, output_type, version_number, scale) is resolved by uuid
+    // (and evaluator_version_id for version-level fields).
+    const summaryEvaluatorByUuid = new Map(
+      (summary.evaluators ?? []).map((e) => [e.uuid, e]),
+    );
     const annotatorNameById = new Map(
       (summary.annotators ?? []).map((a) => [a.uuid, a.name]),
     );
@@ -253,6 +294,10 @@ export function ItemDetailDialog({
     const versionLabels: Record<string, string> = {};
     const evaluatorNamesById: Record<string, string> = {};
     const haEvaluators: HumanAgreementItem["evaluators"] = [];
+    // Per-(evaluator_id, version_id) JobEvaluator entry. The dialog
+    // synthesises a one-entry scale from the per-row `evaluator_value_name`
+    // so different versions of the same evaluator render their own labels.
+    const jobEvaluators: JobEvaluator[] = [];
 
     for (const row of summary.rows) {
       const human_annotations: HumanAnnotation[] = [];
@@ -275,31 +320,58 @@ export function ItemDetailDialog({
       // drop rows that have no matching annotations.
       if (annotatorFilter && human_annotations.length === 0) continue;
 
+      // Resolve per-evaluator metadata from the top-level evaluators[]
+      // block. Falls back to the task-level evaluator def for description
+      // / scale (which the summary used to inline).
+      const summaryEv = summaryEvaluatorByUuid.get(row.evaluator_id);
+      const taskEv = taskEvaluatorByUuid.get(row.evaluator_id);
+      const evName = summaryEv?.name ?? "";
+      const evDescription =
+        summaryEv?.description ?? taskEv?.description ?? null;
+      const evOutputType =
+        summaryEv?.output_type ?? (taskEv?.output_type as
+          | "binary"
+          | "rating"
+          | undefined);
+      const evVersion = row.evaluator_version_id
+        ? summaryEv?.versions?.find(
+            (v) => v.uuid === row.evaluator_version_id,
+          )
+        : undefined;
+
       const evKey = `${row.evaluator_id}-${row.evaluator_version_id ?? ""}`;
       if (!seenEvKey.has(evKey)) {
         seenEvKey.add(evKey);
         evaluators.push({
           evaluator_id: row.evaluator_id,
           evaluator_version_id: row.evaluator_version_id ?? undefined,
-          name: row.evaluator_name,
+          name: evName,
         });
       }
       if (
         row.evaluator_version_id &&
-        typeof row.evaluator_version_number === "number"
+        typeof evVersion?.version_number === "number"
       ) {
         versionLabels[row.evaluator_version_id] =
-          `v${row.evaluator_version_number}`;
+          `v${evVersion.version_number}`;
       }
-      if (!evaluatorNamesById[row.evaluator_id]) {
-        evaluatorNamesById[row.evaluator_id] = row.evaluator_name;
+      if (evName && !evaluatorNamesById[row.evaluator_id]) {
+        evaluatorNamesById[row.evaluator_id] = evName;
       }
 
-      const taskEv = taskEvaluatorByUuid.get(row.evaluator_id);
+      // Prefer the per-version scale; fall back to the task-level snapshot.
       const scaleMin =
-        typeof taskEv?.scale_min === "number" ? taskEv.scale_min : null;
+        typeof evVersion?.scale_min === "number"
+          ? evVersion.scale_min
+          : typeof taskEv?.scale_min === "number"
+            ? taskEv.scale_min
+            : null;
       const scaleMax =
-        typeof taskEv?.scale_max === "number" ? taskEv.scale_max : null;
+        typeof evVersion?.scale_max === "number"
+          ? evVersion.scale_max
+          : typeof taskEv?.scale_max === "number"
+            ? taskEv.scale_max
+            : null;
 
       const suppressEvaluator = annotatorFilter !== null;
       const effectiveValue = suppressEvaluator ? null : row.evaluator_value;
@@ -323,18 +395,51 @@ export function ItemDetailDialog({
         status: effectiveValue !== null ? "completed" : "pending",
         created_at: "",
         completed_at: null,
-        evaluator_version: {
-          uuid: row.evaluator_version_id ?? undefined,
-          version_number: row.evaluator_version_number ?? undefined,
-          scale_min: scaleMin,
-          scale_max: scaleMax,
-        },
-        evaluator: {
-          uuid: row.evaluator_id,
-          name: row.evaluator_name,
-          description: taskEv?.description ?? null,
-          output_type: row.output_type,
-        },
+      });
+
+      // One JobEvaluator per (evaluator_id, version_id). The per-row
+      // `evaluator_value_name` becomes a one-entry scale so the verdict
+      // card surfaces THIS version's label for THIS row's score; rows
+      // without a resolved name fall back to the version-level
+      // output_config or the task-level snapshot.
+      // Build the synthetic scale: start from the version's full scale
+      // (so labels for OTHER values are available when the user
+      // switches between human annotators that picked a different
+      // value) and, when present, override the matching entry's name
+      // with the per-row backend-resolved label. Adds a fresh entry if
+      // the row's value isn't represented in the scale.
+      const baseScale =
+        evVersion?.output_config?.scale ?? taskEv?.output_config?.scale ?? [];
+      const rowValue = row.evaluator_value;
+      const rowValueName = row.evaluator_value_name?.trim() || null;
+      const hasRowOverride = rowValue !== null && !!rowValueName;
+      const mergedScale = hasRowOverride
+        ? (() => {
+            let matched = false;
+            const next = baseScale.map((e) => {
+              if (e.value === rowValue) {
+                matched = true;
+                return { ...e, name: rowValueName };
+              }
+              return e;
+            });
+            if (!matched) {
+              next.push({ value: rowValue, name: rowValueName });
+            }
+            return next;
+          })()
+        : baseScale;
+
+      jobEvaluators.push({
+        uuid: row.evaluator_id,
+        name: evName,
+        description: evDescription,
+        output_type: evOutputType,
+        evaluator_version_id: row.evaluator_version_id ?? undefined,
+        version_number: evVersion?.version_number,
+        scale_min: scaleMin,
+        scale_max: scaleMax,
+        output_config: mergedScale.length > 0 ? { scale: mergedScale } : null,
       });
       haEvaluators.push({
         evaluator_id: row.evaluator_id,
@@ -352,9 +457,34 @@ export function ItemDetailDialog({
       evaluators: haEvaluators,
     };
 
+    // Build a lookup keyed by (evaluator_id, evaluator_version_id) so the
+    // verdict card resolves THIS version's labels/scale, not a sibling
+    // version's. Falls back to any entry with a matching evaluator_id.
+    const byComposite = new Map<string, JobEvaluator>();
+    const byEvaluatorId = new Map<string, JobEvaluator>();
+    for (const e of jobEvaluators) {
+      if (e.evaluator_version_id) {
+        byComposite.set(`${e.uuid}:${e.evaluator_version_id}`, e);
+      }
+      if (!byEvaluatorId.has(e.uuid)) byEvaluatorId.set(e.uuid, e);
+    }
+    const getJobEvaluator = (key: {
+      evaluator_id: string;
+      evaluator_version_id?: string;
+    }): JobEvaluator | null => {
+      if (key.evaluator_version_id) {
+        const hit = byComposite.get(
+          `${key.evaluator_id}:${key.evaluator_version_id}`,
+        );
+        if (hit) return hit;
+      }
+      return byEvaluatorId.get(key.evaluator_id) ?? null;
+    };
+
     return {
       evaluators,
       evaluatorNamesById,
+      getJobEvaluator,
       runs,
       versionLabels,
       humanAgreementForItem,
@@ -373,8 +503,11 @@ export function ItemDetailDialog({
         className="bg-background rounded-none md:rounded-xl w-full max-w-[92rem] h-full md:h-[92vh] flex flex-col shadow-2xl overflow-hidden"
       >
         <div className="relative flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4 border-b border-border">
-          <div className="min-w-0 flex items-center gap-2 flex-wrap">
-            <h2 className="text-base md:text-lg font-semibold text-foreground truncate">
+          <div
+            className="flex-1 min-w-0 flex items-center gap-2 md:max-w-[calc(50%-6rem)]"
+            title={itemTitle(item)}
+          >
+            <h2 className="text-base md:text-lg font-semibold text-foreground truncate min-w-0">
               {itemTitle(item)}
             </h2>
           </div>
@@ -586,6 +719,7 @@ export function ItemDetailDialog({
               taskType={task.type}
               evaluators={adapted.evaluators}
               evaluatorNamesById={adapted.evaluatorNamesById}
+              getJobEvaluator={adapted.getJobEvaluator}
               runs={adapted.runs}
               versionLabels={adapted.versionLabels}
               jobStatus="completed"

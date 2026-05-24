@@ -7,6 +7,7 @@ import {
   TestCaseOutput,
   TestCaseData,
   JudgeResult,
+  TestRunEvaluator,
   CloseIcon,
   TestStats,
 } from "./test-results/shared";
@@ -85,6 +86,12 @@ type TestRunStatusResponse = {
   passed?: number;
   failed?: number;
   results?: TestCaseResult[];
+  /** Top-level per-evaluator metadata block. Each entry pins the
+   * version the run executed against and carries name, description,
+   * output_config, scale_min, scale_max. Backend guarantees an entry
+   * for every uuid referenced by judge_results (synthesises stubs for
+   * legacy rows). */
+  evaluators?: TestRunEvaluator[];
   results_s3_prefix?: string;
   error?: string;
   is_public?: boolean;
@@ -142,6 +149,10 @@ export function TestRunnerDialog({
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [defaultNextReplyEvaluator, setDefaultNextReplyEvaluator] =
     useState<DefaultEvaluatorSummary | null>(null);
+  // Top-level evaluators block from the run-status response. Built into
+  // a uuid-keyed map below and passed into TestRunOutputsPanel as the
+  // source of truth for per-evaluator metadata.
+  const [runEvaluators, setRunEvaluators] = useState<TestRunEvaluator[]>([]);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   // Tracks whether the dialog has already auto-opened a completed test for
   // this open lifecycle. Set back to false on every dialog open / new run /
@@ -215,6 +226,7 @@ export function TestRunnerDialog({
     setSelectedTestUuid(null);
     hasAutoSelectedRef.current = false;
     setCurrentTaskId(taskId);
+    setRunEvaluators([]);
 
     const isInProgress =
       initialRunStatus === "pending" ||
@@ -260,6 +272,7 @@ export function TestRunnerDialog({
     setSelectedTestUuid(null);
     hasAutoSelectedRef.current = false;
     setCurrentTaskId(null);
+    setRunEvaluators([]);
     const initialResults: TestResult[] = tests.map((test) => ({
       test,
       status: "pending",
@@ -312,6 +325,12 @@ export function TestRunnerDialog({
       if (result.name) setRunName(result.name);
       if (result.is_public !== undefined) setIsPublic(result.is_public);
       if (result.share_token !== undefined) setShareToken(result.share_token ?? null);
+      // Always sync to the latest payload (including the empty case) so
+      // the prior run's evaluator metadata can't leak into a fresh run
+      // / past-run-view that omits the field.
+      setRunEvaluators(
+        Array.isArray(result.evaluators) ? result.evaluators : [],
+      );
 
       // Update test results based on polling response
       setTestResults((prev) => {
@@ -906,6 +925,9 @@ export function TestRunnerDialog({
                         reasoning: r.reasoning,
                         judgeResults: r.judgeResults,
                       })),
+                      Object.fromEntries(
+                        runEvaluators.map((e) => [e.uuid, e]),
+                      ),
                     )
                   }
                 />
@@ -978,6 +1000,9 @@ export function TestRunnerDialog({
               selectedId={selectedTestUuid}
               onSelect={setSelectedTestUuid}
               onClearSelection={() => setSelectedTestUuid(null)}
+              evaluatorsByUuid={Object.fromEntries(
+                runEvaluators.map((e) => [e.uuid, e]),
+              )}
               legacyDefaultEvaluator={defaultNextReplyEvaluator}
             />
           </div>

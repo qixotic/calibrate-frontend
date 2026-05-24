@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -62,11 +63,38 @@ type TaskAgreementResponse = {
 // order (union of every annotator with ≥1 annotation on the task);
 // each `rows[i].annotations[annotator_uuid]` is that annotator's
 // latest annotation for the slot, or null when they didn't label it.
+//
+// Per-row evaluator metadata (name, output_type, scale_min/max,
+// version_number, is_live_version) was moved to the top-level
+// `evaluators[]` block. The page looks each row's evaluator up by
+// `evaluator_id` (and `evaluator_version_id` for version-specific
+// fields).
 type SummaryAnnotator = { uuid: string; name: string };
 type SummaryEvaluator = {
-  evaluator_id: string;
+  uuid: string;
   name: string;
+  description?: string | null;
   output_type: "binary" | "rating";
+  evaluator_type?: string;
+  data_type?: string;
+  live_version_id?: string | null;
+  live_version_index?: number | null;
+  versions?: {
+    uuid: string;
+    version_number: number;
+    output_config?: {
+      scale?: {
+        value: boolean | number | string;
+        name?: string | null;
+        description?: string | null;
+        color?: string | null;
+      }[];
+    } | null;
+    scale_min?: number | null;
+    scale_max?: number | null;
+    is_live?: boolean;
+  }[];
+  run_count?: number;
 };
 type SummaryAnnotation = {
   value: boolean | number | null;
@@ -76,10 +104,9 @@ type SummaryRow = {
   item_id: string;
   payload: Record<string, unknown> | null;
   evaluator_id: string;
-  evaluator_name: string;
   evaluator_version_id?: string | null;
-  evaluator_version_number?: number | null;
   evaluator_value: boolean | number | null;
+  evaluator_value_name?: string | null;
   evaluator_reasoning?: string | null;
   // Aggregate agreement scores in [0, 1] for this (item, evaluator) slot.
   // human_agreement: null when <2 annotators labelled the slot.
@@ -114,22 +141,36 @@ type EvaluatorRunMetricEntry = number | { type?: string; mean?: number | null };
 
 type EvaluatorRunJob = {
   uuid: string;
-  task_id: string;
   status: "queued" | "in_progress" | "completed" | "failed";
-  details: {
-    evaluators?: {
-      evaluator_id: string;
-      evaluator_version_id?: string;
-      name?: string;
-    }[];
-    item_count?: number;
-    s3_prefix?: string;
-    metrics?: Record<string, EvaluatorRunMetricEntry>;
-  } | null;
-  error: string | null;
-  created_at: string;
+  // Item count was promoted to the top level alongside the new
+  // evaluators block.
+  item_count?: number;
+  // Per-run evaluator refs — keys back into the response's top-level
+  // `evaluators[]` block via `(evaluator_id, evaluator_version_id)`.
+  // No name / version_number embedded here.
+  evaluators?: {
+    evaluator_id: string;
+    evaluator_version_id: string;
+  }[];
   updated_at: string;
-  completed_at: string | null;
+};
+
+// Top-level evaluators[] entry on the runs-list response. One per
+// (evaluator, pinned version) tuple referenced across all runs. The
+// page builds a `(id, version_id) -> entry` lookup to resolve
+// per-run names / version numbers for the pills.
+type RunsListEvaluator = {
+  uuid: string;
+  name: string;
+  evaluator_version_id?: string;
+  version_number?: number;
+  output_type?: "binary" | "rating";
+  deleted?: boolean;
+};
+
+type EvaluatorRunsListResponse = {
+  evaluators?: RunsListEvaluator[];
+  runs: EvaluatorRunJob[];
 };
 
 function isTab(value: string | null): value is Tab {
@@ -184,6 +225,14 @@ type LabellingTask = {
     output_type?: "binary" | "rating" | null;
     scale_min?: number | boolean | null;
     scale_max?: number | boolean | null;
+    output_config?: {
+      scale?: {
+        value: boolean | number | string;
+        name?: string | null;
+        description?: string | null;
+        color?: string | null;
+      }[];
+    } | null;
     variables?: EvaluatorVariableDef[] | null;
   }[];
   items?: LabellingItem[];
@@ -292,19 +341,31 @@ function runStatusLabel(status: EvaluatorRunJob["status"]): string {
 
 function EvaluatorRunsList({
   runs,
+  evaluators,
   loading,
   error,
-  versionLabels,
   onRequestDelete,
   onOpen,
 }: {
   runs: EvaluatorRunJob[];
+  /** Top-level evaluators[] block from the runs-list response. Keyed
+   * by `(uuid, evaluator_version_id)` for per-run pill rendering. */
+  evaluators: RunsListEvaluator[];
   loading: boolean;
   error: string | null;
-  versionLabels: Record<string, Record<string, string>>;
   onRequestDelete: (runUuid: string) => void;
   onOpen: (runUuid: string) => void;
 }) {
+  // (evaluator_id, evaluator_version_id) -> top-level entry. Same
+  // evaluator can appear under multiple versions, so we key on both.
+  const evaluatorByKey = useMemo(() => {
+    const m = new Map<string, RunsListEvaluator>();
+    for (const e of evaluators) {
+      const vid = e.evaluator_version_id ?? "";
+      m.set(`${e.uuid}:${vid}`, e);
+    }
+    return m;
+  }, [evaluators]);
   if (loading) {
     return (
       <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
@@ -372,24 +433,29 @@ function EvaluatorRunsList({
         <div />
       </div>
       {runs.map((run) => {
-        const itemCount = run.details?.item_count ?? 0;
-        const lastUpdated = run.updated_at || run.created_at;
-        const evaluators = run.details?.evaluators ?? [];
-        const versionLabelFor = (
-          evaluatorId: string,
-          versionId: string | undefined,
-        ): string | null => {
-          if (!versionId) return null;
-          return versionLabels[evaluatorId]?.[versionId] ?? null;
-        };
-        const evaluatorTitle = evaluators
+        const itemCount = run.item_count ?? 0;
+        const lastUpdated = run.updated_at;
+        // Per-run evaluator refs ([{evaluator_id, evaluator_version_id}])
+        // are resolved against the top-level evaluators[] block to get
+        // names and version numbers for the pills.
+        const runEvaluators = (run.evaluators ?? []).map((ref) => {
+          const ev = evaluatorByKey.get(
+            `${ref.evaluator_id}:${ref.evaluator_version_id ?? ""}`,
+          );
+          return {
+            evaluator_id: ref.evaluator_id,
+            evaluator_version_id: ref.evaluator_version_id,
+            name: ev?.name ?? "",
+            version_label:
+              typeof ev?.version_number === "number"
+                ? `v${ev.version_number}`
+                : null,
+          };
+        });
+        const evaluatorTitle = runEvaluators
           .map((e) => {
             const name = e.name || e.evaluator_id.slice(0, 8);
-            const label = versionLabelFor(
-              e.evaluator_id,
-              e.evaluator_version_id,
-            );
-            return label ? `${name} (${label})` : name;
+            return e.version_label ? `${name} (${e.version_label})` : name;
           })
           .join(", ");
         return (
@@ -402,24 +468,20 @@ function EvaluatorRunsList({
               className="flex flex-wrap gap-1.5 min-w-0"
               title={evaluatorTitle}
             >
-              {evaluators.length === 0 ? (
+              {runEvaluators.length === 0 ? (
                 <span className="text-sm text-muted-foreground">—</span>
               ) : (
-                evaluators.map((e) => {
+                runEvaluators.map((e) => {
                   const name = e.name || e.evaluator_id.slice(0, 8);
-                  const label = versionLabelFor(
-                    e.evaluator_id,
-                    e.evaluator_version_id,
-                  );
                   return (
                     <span
                       key={`${e.evaluator_id}-${e.evaluator_version_id ?? ""}`}
                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium border border-border bg-background text-foreground"
                     >
                       <span>{name}</span>
-                      {label && (
+                      {e.version_label && (
                         <span className="font-mono text-[10px] text-muted-foreground">
-                          {label}
+                          {e.version_label}
                         </span>
                       )}
                     </span>
@@ -505,16 +567,6 @@ function ItemRowActions({
           Label
         </button>
       )}
-      {onEdit && (
-        <button
-          type="button"
-          onClick={() => onEdit(itemUuid)}
-          aria-label="Edit"
-          className="h-8 px-3 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer"
-        >
-          Edit
-        </button>
-      )}
       {onEvaluate && (
         <button
           type="button"
@@ -523,6 +575,16 @@ function ItemRowActions({
           className="h-8 px-3 rounded-md text-sm font-medium border border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/20 transition-colors cursor-pointer"
         >
           Evaluate
+        </button>
+      )}
+      {onEdit && (
+        <button
+          type="button"
+          onClick={() => onEdit(itemUuid)}
+          aria-label="Edit"
+          className="h-8 px-3 rounded-md text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer"
+        >
+          Edit
         </button>
       )}
       {/* Delete Button */}
@@ -565,17 +627,83 @@ function LabelledByCell({
       </div>
     );
   }
+  const ids = Array.from(labellers);
+  const nameFor = (id: string) =>
+    annotatorNameById.get(id) ?? id.slice(0, 8);
+  const visibleIds = ids.length <= 2 ? ids : ids.slice(0, 1);
+  const remainingNames =
+    ids.length <= 2 ? [] : ids.slice(1).map(nameFor);
   return (
     <div className="flex flex-wrap gap-1 min-w-0">
-      {Array.from(labellers).map((annId) => (
+      {visibleIds.map((id) => (
         <span
-          key={annId}
+          key={id}
           className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border border-border bg-muted/40 text-foreground"
         >
-          {annotatorNameById.get(annId) ?? annId.slice(0, 8)}
+          {nameFor(id)}
         </span>
       ))}
+      {remainingNames.length > 0 && (
+        <MoreLabellersChip names={remainingNames} />
+      )}
     </div>
+  );
+}
+
+function MoreLabellersChip({ names }: { names: string[] }) {
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const update = () => {
+      if (!triggerRef.current) return;
+      const r = triggerRef.current.getBoundingClientRect();
+      setPos({ top: r.top, left: r.left + r.width / 2 });
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border border-border bg-muted/40 text-muted-foreground cursor-default"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onClick={(e) => e.stopPropagation()}
+      >
+        +{names.length} more
+      </span>
+      {open &&
+        pos &&
+        typeof window !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed z-[9999] -translate-x-1/2 -translate-y-full pointer-events-none"
+            style={{ top: pos.top - 6, left: pos.left }}
+          >
+            <div className="flex flex-wrap gap-1 px-2 py-1.5 rounded-lg bg-white shadow-lg border border-border max-w-64 w-max">
+              {names.map((n, i) => (
+                <span
+                  key={i}
+                  className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border border-border bg-muted/40 text-foreground"
+                >
+                  {n}
+                </span>
+              ))}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -813,6 +941,12 @@ function LabellingTaskPageInner() {
 
   // evaluators / agreement (declared before route-level effects that reset on uuid)
   const [runs, setRuns] = useState<EvaluatorRunJob[]>([]);
+  // Top-level evaluators[] block from the runs-list response. Used to
+  // resolve each run's evaluator refs (id, version_id) into display
+  // pills (name + version_number).
+  const [runsListEvaluators, setRunsListEvaluators] = useState<
+    RunsListEvaluator[]
+  >([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
   /** False until the first evaluator-runs list fetch finishes (avoids empty placeholder flash). */
@@ -879,6 +1013,7 @@ function LabellingTaskPageInner() {
     setTask(null);
     setError(null);
     setRuns([]);
+    setRunsListEvaluators([]);
     setRunsFetchCompleted(false);
     autoTabSwitchedRef.current = false;
   }, [uuid]);
@@ -990,22 +1125,19 @@ function LabellingTaskPageInner() {
     for (const a of taskSummary?.annotators ?? []) map.set(a.uuid, a.name);
     return map;
   }, [taskSummary]);
-  // Map evaluator_id -> { version_id: "v1" }, populated on demand from
-  // /evaluators/{uuid}/versions so we can label runs by version number.
-  const [versionLabels, setVersionLabels] = useState<
-    Record<string, Record<string, string>>
-  >({});
-
   const fetchRuns = useCallback(async () => {
     if (!accessToken || !uuid) return;
     setRunsLoading(true);
     setRunsError(null);
     try {
-      const data = await apiClient<EvaluatorRunJob[]>(
+      const data = await apiClient<EvaluatorRunsListResponse>(
         `/annotation-tasks/${uuid}/evaluator-runs`,
         accessToken,
       );
-      setRuns(Array.isArray(data) ? data : []);
+      setRuns(Array.isArray(data?.runs) ? data.runs : []);
+      setRunsListEvaluators(
+        Array.isArray(data?.evaluators) ? data.evaluators : [],
+      );
     } catch (err) {
       setRunsError(parseApiError(err, "Failed to load evaluator runs"));
     } finally {
@@ -1018,47 +1150,6 @@ function LabellingTaskPageInner() {
     fetchRuns();
   }, [fetchRuns]);
   void activeTab;
-
-  // Fetch evaluator versions for any evaluator referenced by a run that we
-  // haven't already loaded.
-  useEffect(() => {
-    if (!accessToken) return;
-    const needed = new Set<string>();
-    for (const r of runs) {
-      for (const ev of r.details?.evaluators ?? []) {
-        if (ev.evaluator_id && !versionLabels[ev.evaluator_id]) {
-          needed.add(ev.evaluator_id);
-        }
-      }
-    }
-    if (needed.size === 0) return;
-    let cancelled = false;
-    (async () => {
-      const updates: Record<string, Record<string, string>> = {};
-      await Promise.all(
-        Array.from(needed).map(async (evaluatorId) => {
-          try {
-            const versions = await apiClient<
-              Array<{ uuid: string; version_number: number }>
-            >(`/evaluators/${evaluatorId}/versions`, accessToken);
-            const map: Record<string, string> = {};
-            for (const v of versions) {
-              map[v.uuid] = `v${v.version_number}`;
-            }
-            updates[evaluatorId] = map;
-          } catch {
-            updates[evaluatorId] = {};
-          }
-        }),
-      );
-      if (!cancelled) {
-        setVersionLabels((prev) => ({ ...prev, ...updates }));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [runs, accessToken, versionLabels]);
 
   const items = task?.items ?? [];
   const jobs = task?.jobs ?? [];
@@ -2329,9 +2420,9 @@ function LabellingTaskPageInner() {
         {activeTab === "runs" && (
           <EvaluatorRunsList
             runs={runs}
+            evaluators={runsListEvaluators}
             loading={runsLoading || !runsFetchCompleted}
             error={runsError}
-            versionLabels={versionLabels}
             onRequestDelete={(runUuid) => setDeletingRunUuid(runUuid)}
             onOpen={(runUuid) =>
               router.push(
@@ -2346,6 +2437,7 @@ function LabellingTaskPageInner() {
         <RunEvaluatorsDialog
           isOpen={runDialogOpen}
           accessToken={accessToken}
+          taskUuid={uuid}
           evaluators={(task?.evaluators ?? []).map((e) => ({
             uuid: e.uuid,
             name: e.name,

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 import { getBackendUrl } from "@/lib/api";
 import { EvaluatorVerdictCard } from "@/components/EvaluatorVerdictCard";
+import { getBinaryLabel, toRatingScale } from "@/lib/binaryLabels";
 import { LlmItemPane } from "./item-panes/LlmItemPane";
 import { Section } from "./item-panes/shared";
 import { SimulationItemPane } from "./item-panes/SimulationItemPane";
@@ -56,6 +57,19 @@ type Evaluator = {
   // buttons render `scale_min..scale_max` instead of the default 1..5.
   scale_min?: number | null;
   scale_max?: number | null;
+  // Full version output_config returned by the backend. For binary
+  // evaluators the two entries (value: true / value: false) carry the
+  // custom labels and per-level rubric descriptions; for rating
+  // evaluators the entries carry the per-level rubric. Optional —
+  // legacy rows may omit it entirely.
+  output_config?: {
+    scale?: {
+      value: boolean | number | string;
+      name?: string | null;
+      description?: string | null;
+      color?: string | null;
+    }[];
+  } | null;
 };
 
 export type Item = {
@@ -897,6 +911,13 @@ function EvaluatorsPane({
           typeof ev.scale_min === "number" ? ev.scale_min : undefined;
         const scaleMax =
           typeof ev.scale_max === "number" ? ev.scale_max : undefined;
+        const scale = ev.output_config?.scale ?? null;
+        const trueLabel =
+          outputType === "binary" ? getBinaryLabel(scale, true) : null;
+        const falseLabel =
+          outputType === "binary" ? getBinaryLabel(scale, false) : null;
+        const ratingScale =
+          outputType === "rating" ? toRatingScale(scale) : null;
 
         if (readOnly) {
           // Admin / "view submitted" surface — show the verdict the
@@ -923,6 +944,9 @@ function EvaluatorsPane({
                   : null
               }
               reasoning={typeof f?.comment === "string" ? f.comment : null}
+              trueLabel={trueLabel}
+              falseLabel={falseLabel}
+              ratingScale={ratingScale}
             />
           );
         }
@@ -941,6 +965,9 @@ function EvaluatorsPane({
             comment={typeof f?.comment === "string" ? f.comment : ""}
             onValueChange={(v) => setField(k, { value: v })}
             onCommentChange={(s) => setField(k, { comment: s })}
+            trueLabel={trueLabel}
+            falseLabel={falseLabel}
+            ratingScale={ratingScale}
           />
         );
       })}
