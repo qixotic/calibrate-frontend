@@ -298,9 +298,7 @@ export function BulkUploadTestsModal({
         }> = await response.json();
 
         const wanted =
-          testType === "conversation"
-            ? CONVERSATION_EVALUATOR_TYPE
-            : "llm";
+          testType === "conversation" ? CONVERSATION_EVALUATOR_TYPE : "llm";
         const llm: LLMEvaluatorOption[] = raw
           .filter((e) => e.evaluator_type === wanted)
           .map((e) => ({
@@ -860,7 +858,9 @@ export function BulkUploadTestsModal({
       }
 
       const tests = parsedTests.map((test) => {
-        const conversation_history = parseJsonLenient(test.conversation_history);
+        const conversation_history = parseJsonLenient(
+          test.conversation_history,
+        );
 
         if (usesEvaluators) {
           // Send the resolved EvaluatorRefPayload[] (same shape as the
@@ -1181,28 +1181,26 @@ export function BulkUploadTestsModal({
               Select the type of test
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-3xl">
-              {(
-                [
-                  {
-                    value: "response" as const,
-                    label: "Next Reply",
-                    description:
-                      "Evaluate the agent's response given a conversation history",
-                  },
-                  {
-                    value: "tool_call" as const,
-                    label: "Tool Call",
-                    description:
-                      "Check whether the agent invokes the correct tool with the correct arguments",
-                  },
-                  {
-                    value: "conversation" as const,
-                    label: "Conversation",
-                    description:
-                      "Generate the agent's reply, then grade the full conversation as a whole",
-                  },
-                ]
-              ).map((opt) => {
+              {[
+                {
+                  value: "response" as const,
+                  label: "Next Reply",
+                  description:
+                    "Evaluate the agent's response given a conversation history",
+                },
+                {
+                  value: "tool_call" as const,
+                  label: "Tool Call",
+                  description:
+                    "Check whether the agent invokes the correct tool with the correct arguments",
+                },
+                {
+                  value: "conversation" as const,
+                  label: "Conversation",
+                  description:
+                    "Generate the agent's reply, then grade the full conversation",
+                },
+              ].map((opt) => {
                 const isSelected = testType === opt.value;
                 return (
                   <button
@@ -1223,8 +1221,7 @@ export function BulkUploadTestsModal({
                       setAvailableLLMEvaluators([]);
                       setEvaluatorsFetched(false);
                       setEvaluatorsFetchError(null);
-                      if (fileInputRef.current)
-                        fileInputRef.current.value = "";
+                      if (fileInputRef.current) fileInputRef.current.value = "";
                     }}
                     className={`text-left px-4 py-3 rounded-lg border transition-colors cursor-pointer ${
                       isSelected
