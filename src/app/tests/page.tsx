@@ -22,6 +22,8 @@ import {
   EvaluatorVariableDef,
 } from "@/components/AddTestDialog";
 import { BulkUploadTestsModal } from "@/components/BulkUploadTestsModal";
+import { DeleteIconButton } from "@/components/ui/DeleteIconButton";
+import { DuplicateIconButton } from "@/components/ui/DuplicateIconButton";
 import { useSidebarState } from "@/lib/sidebar";
 import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import {
@@ -167,6 +169,9 @@ function LLMPageInner() {
   );
   const [editingTestUuid, setEditingTestUuid] = useState<string | null>(null);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
+  // UUID of the test whose details are being fetched for duplication. Drives
+  // the per-row spinner; the dialog only opens once the fetch resolves.
+  const [duplicatingUuid, setDuplicatingUuid] = useState<string | null>(null);
   const [validationAttempted, setValidationAttempted] = useState(false);
   const [initialTab, setInitialTab] = useState<
     "next-reply" | "tool-invocation" | undefined
@@ -759,6 +764,80 @@ function LLMPageInner() {
     }
   };
 
+  // Duplicate a test: fetch its details first (showing a spinner on the row's
+  // duplicate button), then open the create dialog pre-filled. The dialog is
+  // mounted only after the fresh data is in state, so it can't briefly show a
+  // previous duplicate's leftover config/evaluators. editingTestUuid stays
+  // null so submitting creates a brand-new test — nothing is persisted until
+  // the user submits.
+  const openDuplicateTest = async (test: TestData) => {
+    try {
+      setDuplicatingUuid(test.uuid);
+
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+      if (!backendUrl) {
+        throw new Error("BACKEND_URL environment variable is not set");
+      }
+
+      const response = await fetch(`${backendUrl}/tests/${test.uuid}`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          Authorization: `Bearer ${backendAccessToken}`,
+        },
+      });
+
+      if (response.status === 401) {
+        await signOut({ callbackUrl: "/login" });
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch test details");
+      }
+
+      const testData: TestData = await response.json();
+
+      // Populate all dialog inputs before opening it.
+      setEditingTestUuid(null);
+      setCreateError(null);
+      setNameConflictError(null);
+      setValidationAttempted(false);
+      setNewTestName(`Copy of ${testData.name || test.name}`);
+      setNewTestDescription(
+        testData.config?.description || testData.description || ""
+      );
+      setInitialTab(
+        testData.type === "tool_call" ? "tool-invocation" : "next-reply"
+      );
+      setInitialConfig(testData.config ? (testData.config as TestConfig) : undefined);
+      if (Array.isArray(testData.evaluators)) {
+        setInitialEvaluators(
+          testData.evaluators.map((e) => ({
+            evaluator_uuid: e.uuid,
+            name: e.name,
+            description: e.description ?? null,
+            slug: e.slug,
+            variables: Array.isArray(e.variables) ? e.variables : [],
+            variable_values: e.variable_values ?? null,
+          }))
+        );
+      } else {
+        setInitialEvaluators([]);
+      }
+
+      // Open the dialog only now that the fresh data is in state.
+      setAddTestSidebarOpen(true);
+    } catch (err) {
+      console.error("Error duplicating test:", err);
+      setCreateError(
+        err instanceof Error ? err.message : "Failed to load test"
+      );
+    } finally {
+      setDuplicatingUuid(null);
+    }
+  };
+
   // Update existing test via PUT API
   const updateTest = async (
     config: TestConfig,
@@ -1182,28 +1261,18 @@ function LLMPageInner() {
                         <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-white"></div>
                       </div>
                     </button>
+                    {/* Duplicate Button — opens the create dialog pre-filled
+                        from this test; nothing is saved until submit. */}
+                    <DuplicateIconButton
+                      onClick={() => openDuplicateTest(test)}
+                      tooltip="Duplicate test"
+                      loading={duplicatingUuid === test.uuid}
+                    />
                     {/* Delete Button */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openDeleteDialog(test);
-                      }}
-                      className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
-                    >
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
-                        />
-                      </svg>
-                    </button>
+                    <DeleteIconButton
+                      onClick={() => openDeleteDialog(test)}
+                      title="Delete test"
+                    />
                   </div>
                 </div>
               ))}
@@ -1280,6 +1349,28 @@ function LLMPageInner() {
                         <path d="M8 5v14l11-7z" />
                       </svg>
                       Run test
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDuplicateTest(test);
+                      }}
+                      className="flex-1 h-8 flex items-center justify-center gap-2 rounded-md text-xs font-medium text-foreground bg-muted hover:bg-muted/70 transition-colors"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.5}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"
+                        />
+                      </svg>
+                      Duplicate
                     </button>
                     <button
                       onClick={(e) => {

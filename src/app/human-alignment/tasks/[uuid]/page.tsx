@@ -47,6 +47,8 @@ import {
   agreementColor,
 } from "@/components/human-labelling/AgreementStatCard";
 import { EmptyState } from "@/components/ui/LoadingState";
+import { DeleteIconButton } from "@/components/ui/DeleteIconButton";
+import { DuplicateIconButton } from "@/components/ui/DuplicateIconButton";
 import { useAccessToken } from "@/hooks";
 import { apiClient } from "@/lib/api";
 import { useSidebarState } from "@/lib/sidebar";
@@ -791,12 +793,14 @@ function ItemRowActions({
   onLabel,
   onEdit,
   onEvaluate,
+  onDuplicate,
 }: {
   itemUuid: string;
   onDelete: (uuid: string) => void | Promise<void>;
   onLabel?: (uuid: string) => void;
   onEdit?: (uuid: string) => void;
   onEvaluate?: (uuid: string) => void;
+  onDuplicate?: (uuid: string) => void;
 }) {
   return (
     <div
@@ -833,27 +837,17 @@ function ItemRowActions({
           Edit
         </button>
       )}
+      {onDuplicate && (
+        <DuplicateIconButton
+          onClick={() => onDuplicate(itemUuid)}
+          tooltip="Duplicate item"
+        />
+      )}
       {/* Delete Button */}
-      <button
-        type="button"
+      <DeleteIconButton
         onClick={() => onDelete(itemUuid)}
-        aria-label="Delete item"
-        className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
-      >
-        <svg
-          className="w-4 h-4"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
-          />
-        </svg>
-      </button>
+        title="Delete item"
+      />
     </div>
   );
 }
@@ -1229,6 +1223,16 @@ function LabellingTaskPageInner() {
   const [editLlmItemDescription, setEditLlmItemDescription] = useState("");
   const [savingLlmItem, setSavingLlmItem] = useState(false);
   const [editLlmError, setEditLlmError] = useState<string | null>(null);
+  // When duplicating an item, the create dialog opens pre-filled from this
+  // payload. Cleared whenever the create dialog opens fresh or closes.
+  const [duplicateSourcePayload, setDuplicateSourcePayload] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
+  // STT items use a separate dialog; this holds the row to seed it with.
+  const [duplicateSttRows, setDuplicateSttRows] = useState<
+    { uuid: string; name: string; actual: string; predicted: string }[] | null
+  >(null);
 
   // Sort direction for the items table's Updated at column. Always
   // applied to `updated_at` on the backend; defaults to desc (newest
@@ -2077,10 +2081,16 @@ function LabellingTaskPageInner() {
   const editingInitialEvaluators = buildInitialEvaluators(
     readEvaluatorVariables(editingPayload),
   );
-  const newItemInitialEvaluators = buildInitialEvaluators({});
+  // When duplicating, seed the create dialog's evaluators from the source
+  // item; otherwise start with the task's linked evaluators (empty values).
+  const newItemInitialEvaluators = duplicateSourcePayload
+    ? buildInitialEvaluators(readEvaluatorVariables(duplicateSourcePayload))
+    : buildInitialEvaluators({});
 
-  const editingInitialConfig = (() => {
-    if (!editingPayload) return undefined;
+  const buildInitialConfig = (
+    payload: Record<string, unknown> | null,
+  ): TestConfig | undefined => {
+    if (!payload) return undefined;
     type HistoryItem = TestConfig["history"][number];
     const parseHistory = (raw: unknown): HistoryItem[] => {
       if (!Array.isArray(raw)) return [];
@@ -2124,13 +2134,13 @@ function LabellingTaskPageInner() {
 
     let history: HistoryItem[];
     if (taskType === "simulation") {
-      history = parseHistory(editingPayload.transcript);
+      history = parseHistory(payload.transcript);
     } else {
       // LLM: chat_history (may include tool calls + tool responses) +
       // optional trailing agent_response (the regular text reply being
       // graded).
-      history = parseHistory(editingPayload.chat_history);
-      const ar = editingPayload.agent_response;
+      history = parseHistory(payload.chat_history);
+      const ar = payload.agent_response;
       if (typeof ar === "string" && ar.length > 0) {
         history.push({ role: "assistant", content: ar });
       }
@@ -2139,7 +2149,10 @@ function LabellingTaskPageInner() {
       history,
       evaluation: { type: "response" as const, criteria: "" },
     };
-  })();
+  };
+
+  const editingInitialConfig = buildInitialConfig(editingPayload);
+  const addItemInitialConfig = buildInitialConfig(duplicateSourcePayload);
 
   // Sync the name field whenever a different item is opened for edit.
   useEffect(() => {
@@ -2430,8 +2443,10 @@ function LabellingTaskPageInner() {
                     setNewItemDescription("");
                     setCreateItemError(null);
                     setValidationAttempted(false);
+                    setDuplicateSourcePayload(null);
                     setAddItemOpen(true);
                   } else if (taskType === "stt") {
+                    setDuplicateSttRows(null);
                     setAddSttItemsOpen(true);
                   }
                 }}
@@ -3148,6 +3163,33 @@ function LabellingTaskPageInner() {
                               setEditSttSingleItemUuid(uuid);
                               setEditSttItemsOpen(true);
                             }}
+                            onDuplicate={(uuid) => {
+                              const item = items.find((i) => i.uuid === uuid);
+                              if (!item) return;
+                              const p = (item.payload ?? {}) as Record<
+                                string,
+                                unknown
+                              >;
+                              const nm =
+                                typeof p.name === "string"
+                                  ? (p.name as string)
+                                  : `Item ${item.id}`;
+                              setDuplicateSttRows([
+                                {
+                                  uuid: item.uuid,
+                                  name: `Copy of ${nm}`,
+                                  actual:
+                                    typeof p.reference_transcript === "string"
+                                      ? (p.reference_transcript as string)
+                                      : "",
+                                  predicted:
+                                    typeof p.predicted_transcript === "string"
+                                      ? (p.predicted_transcript as string)
+                                      : "",
+                                },
+                              ]);
+                              setAddSttItemsOpen(true);
+                            }}
                             onEvaluate={
                               selectedItemIds.size === 0 && !selectAllTotal
                                 ? (uuid) => {
@@ -3291,6 +3333,28 @@ function LabellingTaskPageInner() {
                                 : undefined
                             }
                             onEdit={(uuid) => setEditLlmItemUuid(uuid)}
+                            onDuplicate={(uuid) => {
+                              const item = items.find((i) => i.uuid === uuid);
+                              if (!item) return;
+                              const p = (item.payload ?? null) as Record<
+                                string,
+                                unknown
+                              > | null;
+                              const name =
+                                typeof p?.name === "string"
+                                  ? (p.name as string)
+                                  : `Item ${item.id}`;
+                              const desc =
+                                typeof p?.description === "string"
+                                  ? (p.description as string)
+                                  : "";
+                              setNewItemName(`Copy of ${name}`);
+                              setNewItemDescription(desc);
+                              setDuplicateSourcePayload(p);
+                              setCreateItemError(null);
+                              setValidationAttempted(false);
+                              setAddItemOpen(true);
+                            }}
                             onEvaluate={
                               selectedItemIds.size === 0 && !selectAllTotal
                                 ? (uuid) => {
@@ -3565,7 +3629,10 @@ function LabellingTaskPageInner() {
         <AddTestDialog
           isOpen={addItemOpen}
           onClose={() => {
-            if (!creatingItem) setAddItemOpen(false);
+            if (!creatingItem) {
+              setAddItemOpen(false);
+              setDuplicateSourcePayload(null);
+            }
           }}
           isEditing={false}
           isLoading={false}
@@ -3579,6 +3646,7 @@ function LabellingTaskPageInner() {
           mode="labelItem"
           allowAgentLastMessage={taskType === "simulation"}
           requireAssistantLastMessage={taskType === "llm"}
+          initialConfig={addItemInitialConfig}
           initialEvaluators={newItemInitialEvaluators}
           onSubmit={async (
             config: TestConfig,
@@ -3669,6 +3737,7 @@ function LabellingTaskPageInner() {
                 body: { items: [{ payload }] },
               });
               setAddItemOpen(false);
+              setDuplicateSourcePayload(null);
               handleTabChange("items");
               await Promise.all([fetchTask(), fetchTaskSummary()]);
             } catch (err) {
@@ -3875,7 +3944,11 @@ function LabellingTaskPageInner() {
 
       <AddSttItemsDialog
         isOpen={addSttItemsOpen}
-        onClose={() => setAddSttItemsOpen(false)}
+        initialRows={duplicateSttRows ?? undefined}
+        onClose={() => {
+          setAddSttItemsOpen(false);
+          setDuplicateSttRows(null);
+        }}
         onSubmit={async (rows) => {
           if (!accessToken) return;
           await apiClient(`/annotation-tasks/${uuid}/items`, accessToken, {
@@ -3893,6 +3966,7 @@ function LabellingTaskPageInner() {
           handleTabChange("items");
           await Promise.all([fetchTask(), fetchTaskSummary()]);
           setAddSttItemsOpen(false);
+          setDuplicateSttRows(null);
         }}
       />
 
