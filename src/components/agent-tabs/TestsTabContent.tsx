@@ -18,6 +18,7 @@ import {
 import { BulkUploadTestsModal } from "@/components/BulkUploadTestsModal";
 import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { showLimitToast } from "@/constants/limits";
+import { testTypeLabel } from "@/lib/testTypes";
 import {
   readBulkNameConflictMessage,
   readNameConflictMessage,
@@ -27,7 +28,7 @@ type TestData = {
   uuid: string;
   name: string;
   description: string;
-  type: "response" | "tool_call";
+  type: "response" | "tool_call" | "conversation";
   config: Record<string, any>;
   created_at: string;
   updated_at: string;
@@ -195,7 +196,7 @@ export function TestsTabContent({
   // is Next Reply, "tool_call" is Tool Call. The "select all" checkbox keys
   // off `filteredAgentTests`, so this filter also narrows what gets selected.
   const [typeFilter, setTypeFilter] = useState<
-    "all" | "response" | "tool_call"
+    "all" | "response" | "tool_call" | "conversation"
   >("all");
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -221,7 +222,7 @@ export function TestsTabContent({
   const [editingTestUuid, setEditingTestUuid] = useState<string | null>(null);
   const [isLoadingTest, setIsLoadingTest] = useState(false);
   const [initialTab, setInitialTab] = useState<
-    "next-reply" | "tool-invocation" | undefined
+    "next-reply" | "tool-invocation" | "conversation" | undefined
   >(undefined);
   const [initialConfig, setInitialConfig] = useState<TestConfig | undefined>(
     undefined,
@@ -703,7 +704,9 @@ export function TestsTabContent({
         throw new Error("BACKEND_URL environment variable is not set");
       }
 
-      const isResponse = config.evaluation.type === "response";
+      const evalType = config.evaluation.type;
+      const usesEvaluators =
+        evalType === "response" || evalType === "conversation";
       const testItem: {
         name: string;
         conversation_history: TestConfig["history"];
@@ -713,7 +716,7 @@ export function TestsTabContent({
         name: newTestName.trim(),
         conversation_history: config.history,
       };
-      if (isResponse) {
+      if (usesEvaluators) {
         testItem.evaluators = evaluators;
       } else {
         testItem.tool_calls = config.evaluation.tool_calls ?? [];
@@ -830,7 +833,11 @@ export function TestsTabContent({
 
       setNewTestName(testData.name || "");
       setInitialTab(
-        testData.type === "tool_call" ? "tool-invocation" : "next-reply",
+        testData.type === "tool_call"
+          ? "tool-invocation"
+          : testData.type === "conversation"
+            ? "conversation"
+            : "next-reply",
       );
       if (testData.config) {
         setInitialConfig(testData.config as TestConfig);
@@ -945,11 +952,11 @@ export function TestsTabContent({
       }
 
       // Mirror the standalone tests page: send `evaluators` for next-reply
-      // tests so the pivot set is replaced; omit it for tool-invocation tests
-      // so existing links are left untouched.
+      // and conversation tests so the pivot set is replaced; omit it for
+      // tool-invocation tests so existing links are left untouched.
       const body: {
         name: string;
-        type: "response" | "tool_call";
+        type: "response" | "tool_call" | "conversation";
         config: TestConfig;
         evaluators?: EvaluatorRefPayload[];
       } = {
@@ -957,7 +964,10 @@ export function TestsTabContent({
         type: config.evaluation.type,
         config: config,
       };
-      if (config.evaluation.type === "response") {
+      if (
+        config.evaluation.type === "response" ||
+        config.evaluation.type === "conversation"
+      ) {
         body.evaluators = evaluators;
       }
 
@@ -1356,7 +1366,7 @@ export function TestsTabContent({
                     </p>
                   )}
                   <span className="inline-block mt-1 px-2 py-0.5 text-xs rounded-full bg-muted text-muted-foreground">
-                    {test.type === "tool_call" ? "Tool Call" : "Next Reply"}
+                    {testTypeLabel(test.type)}
                   </span>
                 </button>
               ))
@@ -1412,7 +1422,10 @@ export function TestsTabContent({
               className="flex flex-col sm:grid sm:grid-cols-[minmax(0,1fr)_5.75rem_5rem_9.25rem] sm:items-start sm:justify-items-stretch gap-2 sm:gap-2 xl:grid-cols-[minmax(0,1fr)_6.25rem_5.75rem_11.5rem] xl:gap-3 px-3 md:px-4 py-2 md:py-2 border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors cursor-pointer"
             >
               <div className="flex items-start justify-between gap-2 sm:block min-w-0">
-                <span className="text-xs md:text-sm font-medium text-foreground block min-w-0 break-words">
+                <span
+                  className="text-xs md:text-sm font-medium text-foreground block min-w-0 truncate"
+                  title={getTestRunDisplayName(run)}
+                >
                   {getTestRunDisplayName(run)}
                 </span>
                 <span className="sm:hidden text-xs text-muted-foreground">
@@ -1682,9 +1695,7 @@ export function TestsTabContent({
                             </p>
                           )}
                           <span className="inline-block mt-1 px-2 py-0.5 text-xs rounded-full bg-muted text-muted-foreground">
-                            {test.type === "tool_call"
-                              ? "Tool Call"
-                              : "Next Reply"}
+                            {testTypeLabel(test.type)}
                           </span>
                         </button>
                       ))
@@ -1867,6 +1878,7 @@ export function TestsTabContent({
                     { value: "all", label: "All" },
                     { value: "response", label: "Next Reply" },
                     { value: "tool_call", label: "Tool Call" },
+                    { value: "conversation", label: "Conversation" },
                   ] as const
                 ).map((opt) => (
                   <button
@@ -2122,9 +2134,7 @@ export function TestsTabContent({
                           </svg>
                         )}
                         <span className="text-sm text-muted-foreground">
-                          {test.type === "tool_call"
-                            ? "Tool Call"
-                            : "Next Reply"}
+                          {testTypeLabel(test.type)}
                         </span>
                       </div>
                       {/* Run Button */}
@@ -2253,9 +2263,7 @@ export function TestsTabContent({
                               {test.name}
                             </h4>
                             <p className="text-xs text-muted-foreground mt-1">
-                              {test.type === "tool_call"
-                                ? "Tool Call"
-                                : "Next Reply"}
+                              {testTypeLabel(test.type)}
                             </p>
                           </div>
                         </div>
