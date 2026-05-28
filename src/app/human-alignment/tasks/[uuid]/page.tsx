@@ -1611,13 +1611,93 @@ function LabellingTaskPageInner() {
   const canAddItem =
     taskType === "llm" || taskType === "simulation" || taskType === "stt";
 
+  /**
+   * Anchor for shift+click range selection — the uuid of the most
+   * recently clicked row/checkbox. Cleared if it drops out of `items`.
+   */
+  const [lastSelectedItemUuid, setLastSelectedItemUuid] = useState<
+    string | null
+  >(null);
+
+  /**
+   * `onChange` on a checkbox doesn't carry `shiftKey`, and calling
+   * `e.preventDefault()` on the checkbox's `onClick` desyncs React's
+   * controlled `checked` prop from the DOM (state updates but the visual
+   * tick doesn't appear). So we capture shift state on `mousedown` into a
+   * ref and read it inside `onChange`, leaving the native toggle alone.
+   */
+  const pendingShiftRef = useRef(false);
+
+  /**
+   * "Select all N rows across pages" mode. When true, bulk actions send
+   * `{ select_all: true, q? }` to the backend instead of an explicit
+   * `item_ids` list — so they apply to every item matching the current
+   * filter, not just the rows currently in `selectedItemIds`. Entered
+   * via the inline CTA in the bulk-action toolbar once the current
+   * page's "Select all" is checked AND there's more than one page;
+   * exited by any per-row interaction, by the Clear button, by a
+   * search change, or on action success.
+   */
+  const [selectAllTotal, setSelectAllTotal] = useState(false);
+
   const toggleItem = (uuid: string) => {
+    if (selectAllTotal) {
+      // Leaving "select all across pages": the backend can't express
+      // "all except this one", so collapse to an explicit selection of
+      // the current page (every visible row was shown ticked) and drop
+      // the row the user just unticked.
+      const next = new Set(items.map((i) => i.uuid));
+      next.delete(uuid);
+      setSelectedItemIds(next);
+      setSelectAllTotal(false);
+      setLastSelectedItemUuid(uuid);
+      return;
+    }
     setSelectedItemIds((prev) => {
       const next = new Set(prev);
       if (next.has(uuid)) next.delete(uuid);
       else next.add(uuid);
       return next;
     });
+    setLastSelectedItemUuid(uuid);
+  };
+
+  /**
+   * Shift+click range selection: adds every item between the anchor
+   * (`lastSelectedItemUuid`) and `targetUuid` — inclusive, in the current
+   * sorted order — to the selection. Falls back to a plain toggle if
+   * the anchor is missing.
+   */
+  const selectRangeTo = (targetUuid: string) => {
+    // In "select all across pages" mode every row is already ticked, so a
+    // shift+click degrades to a single toggle (which materialises the page
+    // selection and drops select-all).
+    if (selectAllTotal) {
+      toggleItem(targetUuid);
+      return;
+    }
+    if (!lastSelectedItemUuid || lastSelectedItemUuid === targetUuid) {
+      toggleItem(targetUuid);
+      return;
+    }
+    const anchorIdx = items.findIndex((i) => i.uuid === lastSelectedItemUuid);
+    const targetIdx = items.findIndex((i) => i.uuid === targetUuid);
+    if (anchorIdx === -1 || targetIdx === -1) {
+      toggleItem(targetUuid);
+      return;
+    }
+    const [start, end] =
+      anchorIdx <= targetIdx
+        ? [anchorIdx, targetIdx]
+        : [targetIdx, anchorIdx];
+    setSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      for (let i = start; i <= end; i++) next.add(items[i].uuid);
+      return next;
+    });
+    setLastSelectedItemUuid(targetUuid);
+    // Range selection is an explicit per-row gesture; drop "select all".
+    setSelectAllTotal(false);
   };
 
   /**
@@ -1650,27 +1730,45 @@ function LabellingTaskPageInner() {
     });
   };
 
-  const allSelected = items.length > 0 && selectedItemIds.size === items.length;
-  const someSelected = selectedItemIds.size > 0 && !allSelected;
+  const allSelected =
+    selectAllTotal ||
+    (items.length > 0 && selectedItemIds.size === items.length);
+  const someSelected =
+    !selectAllTotal && selectedItemIds.size > 0 && !allSelected;
   const toggleSelectAll = () => {
-    setSelectedItemIds((prev) =>
-      prev.size === items.length
-        ? new Set()
-        : new Set(items.map((i) => i.uuid)),
-    );
+    if (allSelected) {
+      // Everything (current page, or all-across-pages) is selected → clear.
+      setSelectedItemIds(new Set());
+      setSelectAllTotal(false);
+    } else {
+      setSelectedItemIds(new Set(items.map((i) => i.uuid)));
+    }
   };
+
+  /**
+   * A change to the search query redefines what "all" means, so the
+   * across-pages select needs to be re-confirmed by the user. Pagination
+   * (`itemsOffset`) does NOT reset it — navigating between pages of the
+   * same filter shouldn't clear the user's "select all" intent.
+   */
+  useEffect(() => {
+    setSelectAllTotal(false);
+  }, [itemsSearch]);
 
   // Drop selections that no longer exist in the items list (after delete or refetch).
   useEffect(() => {
+    const ids = new Set(items.map((i) => i.uuid));
     setSelectedItemIds((prev) => {
       if (prev.size === 0) return prev;
-      const ids = new Set(items.map((i) => i.uuid));
       const next = new Set<string>();
       prev.forEach((id) => {
         if (ids.has(id)) next.add(id);
       });
       return next.size === prev.size ? prev : next;
     });
+    setLastSelectedItemUuid((prev) =>
+      prev && !ids.has(prev) ? null : prev,
+    );
   }, [items]);
 
   const toggleJob = (jobUuid: string) => {
@@ -1710,23 +1808,41 @@ function LabellingTaskPageInner() {
   const [runDialogItemUuids, setRunDialogItemUuids] = useState<string[] | null>(
     null,
   );
+  /**
+   * When the user evaluated via the "select all across pages" CTA, we
+   * remember that here so `submitRunEvaluators` sends
+   * `{ select_all: true, q? }` instead of `item_ids`. Reset every time
+   * the run dialog is opened so a stale flag doesn't leak between flows.
+   */
+  const [runDialogSelectAll, setRunDialogSelectAll] = useState<{
+    q?: string;
+  } | null>(null);
   const [runDialogSubmitError, setRunDialogSubmitError] = useState<
     string | null
   >(null);
 
-  const handleRunEvaluators = (itemUuids?: string[] | string) => {
+  const handleRunEvaluators = (
+    target?: string[] | string | { selectAll: true; q?: string },
+  ) => {
     if (!accessToken || !uuid || startingRun) return;
     const linked = task?.evaluators ?? [];
     if (linked.length === 0) {
       toast.error("Link at least one evaluator before running.");
       return;
     }
-    const ids = Array.isArray(itemUuids)
-      ? itemUuids
-      : itemUuids
-        ? [itemUuids]
-        : null;
-    setRunDialogItemUuids(ids);
+    if (
+      target &&
+      typeof target === "object" &&
+      !Array.isArray(target) &&
+      "selectAll" in target
+    ) {
+      setRunDialogItemUuids(null);
+      setRunDialogSelectAll({ q: target.q });
+    } else {
+      const ids = Array.isArray(target) ? target : target ? [target] : null;
+      setRunDialogItemUuids(ids);
+      setRunDialogSelectAll(null);
+    }
     setRunDialogSubmitError(null);
     setRunDialogOpen(true);
   };
@@ -1736,11 +1852,17 @@ function LabellingTaskPageInner() {
   ) => {
     if (!accessToken || !uuid || startingRun) return;
     const ids = runDialogItemUuids;
+    const selectAll = runDialogSelectAll;
     setStartingRun(true);
     setRunDialogSubmitError(null);
     try {
       const body: Record<string, unknown> = { evaluators: selections };
-      if (ids && ids.length > 0) body.item_ids = ids;
+      if (selectAll) {
+        body.select_all = true;
+        if (selectAll.q) body.q = selectAll.q;
+      } else if (ids && ids.length > 0) {
+        body.item_ids = ids;
+      }
       const result = await apiClient<{
         job_uuid: string;
         status: string;
@@ -1868,19 +1990,24 @@ function LabellingTaskPageInner() {
   };
 
   const handleDeleteSelected = async () => {
-    if (selectedItemIds.size === 0 || !accessToken) return;
+    if ((selectedItemIds.size === 0 && !selectAllTotal) || !accessToken)
+      return;
     setDeletingSelected(true);
     try {
+      const body: Record<string, unknown> = selectAllTotal
+        ? {
+            select_all: true,
+            ...(itemsSearch ? { q: itemsSearch } : {}),
+          }
+        : { item_ids: Array.from(selectedItemIds) };
       await apiClient<{ deleted_count: number }>(
         `/annotation-tasks/${uuid}/items`,
         accessToken,
-        {
-          method: "DELETE",
-          body: { item_ids: Array.from(selectedItemIds) },
-        },
+        { method: "DELETE", body },
       );
       setDeleteSelectedOpen(false);
       setSelectedItemIds(new Set());
+      setSelectAllTotal(false);
       await Promise.all([fetchTask(), fetchTaskSummary()]);
     } catch (err) {
       setError(parseApiError(err, "Failed to delete items"));
@@ -2040,21 +2167,29 @@ function LabellingTaskPageInner() {
   }, []);
 
   const handleAssignAnnotators = async (annotatorIds: string[]) => {
-    if (selectedItemIds.size === 0 || annotatorIds.length === 0 || !accessToken)
+    if (
+      (selectedItemIds.size === 0 && !selectAllTotal) ||
+      annotatorIds.length === 0 ||
+      !accessToken
+    )
       return;
+    const body: Record<string, unknown> = {
+      annotator_ids: annotatorIds,
+      ...(selectAllTotal
+        ? {
+            select_all: true,
+            ...(itemsSearch ? { q: itemsSearch } : {}),
+          }
+        : { item_ids: Array.from(selectedItemIds) }),
+    };
     const result = await apiClient<{ count: number; jobs: CreatedJob[] }>(
       `/annotation-tasks/${uuid}/jobs`,
       accessToken,
-      {
-        method: "POST",
-        body: {
-          annotator_ids: annotatorIds,
-          item_ids: Array.from(selectedItemIds),
-        },
-      },
+      { method: "POST", body },
     );
     setAssignOpen(false);
     setSelectedItemIds(new Set());
+    setSelectAllTotal(false);
     setCreatedJobs(result.jobs ?? []);
     setJobsCreatedOpen(true);
     fetchTask();
@@ -2768,16 +2903,60 @@ function LabellingTaskPageInner() {
                   />
                 </div>
               </div>
-              {/* Bulk-action toolbar (shown when at least one row is selected) */}
-              {selectedItemIds.size > 0 && (
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2">
-                  <span className="text-sm">
-                    <span className="font-medium">{selectedItemIds.size}</span>{" "}
-                    item{selectedItemIds.size === 1 ? "" : "s"} selected
-                  </span>
+              {/* Bulk-action toolbar (shown when at least one row is selected,
+                  or when "select all across pages" is active). */}
+              {(selectedItemIds.size > 0 || selectAllTotal) && (
+                <div
+                  className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 transition-colors ${
+                    selectAllTotal
+                      ? "border-amber-500/50 bg-amber-500/10"
+                      : "border-border bg-muted/30"
+                  }`}
+                >
+                  <div
+                    className={`flex items-center gap-2 text-sm ${
+                      selectAllTotal
+                        ? "text-amber-700 dark:text-amber-300"
+                        : ""
+                    }`}
+                  >
+                    <span>
+                      <span className="font-medium">
+                        {selectAllTotal ? itemsTotal : selectedItemIds.size}
+                      </span>{" "}
+                      item
+                      {(selectAllTotal
+                        ? itemsTotal
+                        : selectedItemIds.size) === 1
+                        ? ""
+                        : "s"}{" "}
+                      selected
+                      {selectAllTotal && itemsSearch ? (
+                        <span className="opacity-80">
+                          {" "}
+                          matching &ldquo;{itemsSearch}&rdquo;
+                        </span>
+                      ) : null}
+                    </span>
+                    {!selectAllTotal &&
+                      allSelected &&
+                      itemsTotal > items.length && (
+                        <button
+                          onClick={() => setSelectAllTotal(true)}
+                          className="inline-flex items-center h-7 px-2.5 rounded-md text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 hover:border-amber-500/60 transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          Select all {itemsTotal} item
+                          {itemsTotal === 1 ? "" : "s"}
+                          {itemsSearch ? ` matching "${itemsSearch}"` : ""}
+                        </button>
+                      )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setSelectedItemIds(new Set())}
+                      onClick={() => {
+                        setSelectedItemIds(new Set());
+                        setSelectAllTotal(false);
+                      }}
                       className="h-8 px-3 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
                     >
                       Clear
@@ -2790,19 +2969,13 @@ function LabellingTaskPageInner() {
                     </button>
                     <button
                       onClick={() => {
-                        const selected = Array.from(selectedItemIds);
-                        // Omit item_ids when every item in the entire
-                        // task is selected (selection is page-scoped, so
-                        // we only hit this when the task has ≤ one
-                        // page and every row on it is selected).
-                        if (
-                          itemsTotal > 0 &&
-                          selected.length === itemsTotal &&
-                          selected.length === items.length
-                        ) {
-                          handleRunEvaluators();
+                        if (selectAllTotal) {
+                          handleRunEvaluators({
+                            selectAll: true,
+                            q: itemsSearch || undefined,
+                          });
                         } else {
-                          handleRunEvaluators(selected);
+                          handleRunEvaluators(Array.from(selectedItemIds));
                         }
                       }}
                       disabled={startingRun}
@@ -2858,7 +3031,7 @@ function LabellingTaskPageInner() {
                       }}
                       onChange={toggleSelectAll}
                       aria-label="Select all"
-                      className="w-4 h-4 cursor-pointer accent-foreground"
+                      className="w-5 h-5 cursor-pointer accent-foreground"
                     />
                     <div className="text-sm font-medium text-muted-foreground">
                       Name
@@ -2896,12 +3069,25 @@ function LabellingTaskPageInner() {
                       typeof p.predicted_transcript === "string"
                         ? p.predicted_transcript
                         : "";
-                    const isSelected = selectedItemIds.has(item.uuid);
+                    const isSelected =
+                      selectAllTotal || selectedItemIds.has(item.uuid);
                     const labellerIds = labellersByItem.get(item.uuid);
                     return (
                       <Fragment key={item.uuid}>
                         <div
-                          onClick={() => openItemDetail(item.uuid)}
+                          onMouseDown={(e) => {
+                            // Shift+click on text triggers a browser text-selection
+                            // range; suppress it so range-selecting rows stays clean.
+                            if (e.shiftKey) e.preventDefault();
+                          }}
+                          onClick={(e) => {
+                            if (e.shiftKey) {
+                              e.preventDefault();
+                              selectRangeTo(item.uuid);
+                              return;
+                            }
+                            openItemDetail(item.uuid);
+                          }}
                           className={`grid grid-cols-[40px_minmax(0,0.6fr)_minmax(0,1fr)_minmax(0,1fr)_200px_180px_300px] gap-6 px-4 py-3 border-b border-border last:border-b-0 transition-colors items-center cursor-pointer ${
                             isSelected ? "bg-muted/30" : "hover:bg-muted/20"
                           }`}
@@ -2909,10 +3095,20 @@ function LabellingTaskPageInner() {
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={() => toggleItem(item.uuid)}
+                            onMouseDown={(e) => {
+                              pendingShiftRef.current = e.shiftKey;
+                            }}
+                            onChange={() => {
+                              if (pendingShiftRef.current) {
+                                selectRangeTo(item.uuid);
+                              } else {
+                                toggleItem(item.uuid);
+                              }
+                              pendingShiftRef.current = false;
+                            }}
                             onClick={(e) => e.stopPropagation()}
                             aria-label={`Select item ${item.id}`}
-                            className="w-4 h-4 cursor-pointer accent-foreground"
+                            className="w-5 h-5 cursor-pointer accent-foreground"
                           />
                           <p className="text-sm text-foreground line-clamp-2">
                             {name || "—"}
@@ -2934,7 +3130,7 @@ function LabellingTaskPageInner() {
                             itemUuid={item.uuid}
                             onDelete={requestDeleteOneItem}
                             onLabel={
-                              selectedItemIds.size === 0
+                              selectedItemIds.size === 0 && !selectAllTotal
                                 ? (uuid) => {
                                     // Sole row → skip the select-then-bulk
                                     // dance and open the assign dialog
@@ -2953,7 +3149,7 @@ function LabellingTaskPageInner() {
                               setEditSttItemsOpen(true);
                             }}
                             onEvaluate={
-                              selectedItemIds.size === 0
+                              selectedItemIds.size === 0 && !selectAllTotal
                                 ? (uuid) => {
                                     if (items.length === 1) {
                                       setSelectedItemIds(new Set([uuid]));
@@ -2981,7 +3177,7 @@ function LabellingTaskPageInner() {
                       }}
                       onChange={toggleSelectAll}
                       aria-label="Select all"
-                      className="w-4 h-4 cursor-pointer accent-foreground"
+                      className="w-5 h-5 cursor-pointer accent-foreground"
                     />
                     <div className="text-sm font-medium text-muted-foreground">
                       Name
@@ -3006,7 +3202,8 @@ function LabellingTaskPageInner() {
                     </div>
                   </div>
                   {items.map((item) => {
-                    const isSelected = selectedItemIds.has(item.uuid);
+                    const isSelected =
+                      selectAllTotal || selectedItemIds.has(item.uuid);
                     const labellerIds = labellersByItem.get(item.uuid);
                     const itemPayloadObj =
                       item.payload && typeof item.payload === "object"
@@ -3020,7 +3217,19 @@ function LabellingTaskPageInner() {
                     return (
                       <Fragment key={item.uuid}>
                         <div
-                          onClick={() => openItemDetail(item.uuid)}
+                          onMouseDown={(e) => {
+                            // Shift+click on text triggers a browser text-selection
+                            // range; suppress it so range-selecting rows stays clean.
+                            if (e.shiftKey) e.preventDefault();
+                          }}
+                          onClick={(e) => {
+                            if (e.shiftKey) {
+                              e.preventDefault();
+                              selectRangeTo(item.uuid);
+                              return;
+                            }
+                            openItemDetail(item.uuid);
+                          }}
                           className={`grid grid-cols-[40px_minmax(0,1fr)_minmax(0,1.2fr)_200px_180px_300px] gap-6 px-4 py-3 border-b border-border last:border-b-0 transition-colors items-center cursor-pointer ${
                             isSelected ? "bg-muted/30" : "hover:bg-muted/20"
                           }`}
@@ -3028,10 +3237,20 @@ function LabellingTaskPageInner() {
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={() => toggleItem(item.uuid)}
+                            onMouseDown={(e) => {
+                              pendingShiftRef.current = e.shiftKey;
+                            }}
+                            onChange={() => {
+                              if (pendingShiftRef.current) {
+                                selectRangeTo(item.uuid);
+                              } else {
+                                toggleItem(item.uuid);
+                              }
+                              pendingShiftRef.current = false;
+                            }}
                             onClick={(e) => e.stopPropagation()}
                             aria-label={`Select item ${item.id}`}
-                            className="w-4 h-4 cursor-pointer accent-foreground"
+                            className="w-5 h-5 cursor-pointer accent-foreground"
                           />
                           <p className="text-sm text-foreground line-clamp-1">
                             {previewItemPayload(item.payload, taskType)}
@@ -3057,7 +3276,7 @@ function LabellingTaskPageInner() {
                             itemUuid={item.uuid}
                             onDelete={requestDeleteOneItem}
                             onLabel={
-                              selectedItemIds.size === 0
+                              selectedItemIds.size === 0 && !selectAllTotal
                                 ? (uuid) => {
                                     // Sole row → skip the select-then-bulk
                                     // dance and open the assign dialog
@@ -3073,7 +3292,7 @@ function LabellingTaskPageInner() {
                             }
                             onEdit={(uuid) => setEditLlmItemUuid(uuid)}
                             onEvaluate={
-                              selectedItemIds.size === 0
+                              selectedItemIds.size === 0 && !selectAllTotal
                                 ? (uuid) => {
                                     if (items.length === 1) {
                                       setSelectedItemIds(new Set([uuid]));
@@ -3730,6 +3949,7 @@ function LabellingTaskPageInner() {
           setEditSttItemsOpen(false);
           setEditSttSingleItemUuid(null);
           setSelectedItemIds(new Set());
+          setSelectAllTotal(false);
         }}
       />
 
@@ -3737,7 +3957,9 @@ function LabellingTaskPageInner() {
         <AssignAnnotatorsDialog
           isOpen={assignOpen}
           accessToken={accessToken}
-          selectedItemCount={selectedItemIds.size}
+          selectedItemCount={
+            selectAllTotal ? itemsTotal : selectedItemIds.size
+          }
           onClose={() => setAssignOpen(false)}
           onConfirm={handleAssignAnnotators}
         />
@@ -3756,7 +3978,19 @@ function LabellingTaskPageInner() {
         }}
         onConfirm={handleDeleteSelected}
         title="Delete items"
-        message={`Delete ${selectedItemIds.size} item${selectedItemIds.size === 1 ? "" : "s"}? Any annotations on ${selectedItemIds.size === 1 ? "this item" : "these items"} will also be lost. This cannot be undone.`}
+        message={(() => {
+          const count = selectAllTotal ? itemsTotal : selectedItemIds.size;
+          const itemWord = count === 1 ? "item" : "items";
+          const annotationsClause =
+            count === 1
+              ? "Any annotations on this item will also be lost."
+              : "Any annotations on these items will also be lost.";
+          const scopeClause =
+            selectAllTotal && itemsSearch
+              ? ` matching "${itemsSearch}"`
+              : "";
+          return `Delete ${count} ${itemWord}${scopeClause}? ${annotationsClause} This cannot be undone.`;
+        })()}
         confirmText="Delete"
         isDeleting={deletingSelected}
       />
