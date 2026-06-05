@@ -7,12 +7,15 @@ import {
   useActiveOrgUuid,
   useOrganizations,
   useOrgMembers,
+  useWorkspaceApiKeys,
   seedOrgsCache,
 } from "@/hooks";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { AppLayout } from "@/components/AppLayout";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
+import { CreateApiKeyDialog } from "@/components/CreateApiKeyDialog";
+import { EmptyState, LoadingState } from "@/components/ui/LoadingState";
 import { useSidebarState } from "@/lib/sidebar";
 import { apiGet } from "@/lib/api";
 import { parseBackendErrorMessage } from "@/lib/parseBackendError";
@@ -22,17 +25,54 @@ import {
   pickDefaultOrg,
   setActiveOrgUuid,
   type Organization,
+  type OrganizationApiKey,
   type OrganizationMember,
 } from "@/lib/orgs";
+
+const SETTINGS_TABS = [
+  { id: "admin", label: "Admin" },
+  { id: "api-keys", label: "API keys" },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 
 export default function WorkspaceSettingsPage() {
   const router = useRouter();
   const accessToken = useAccessToken();
   const [sidebarOpen, setSidebarOpen] = useSidebarState();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("admin");
 
   useEffect(() => {
     document.title = "Workspace settings | Calibrate";
   }, []);
+
+  // Restore the selected tab from `?tab=` on load, so a reload or shared link
+  // keeps the user on the same tab. We read the URL directly instead of
+  // `useSearchParams()` to avoid forcing a Suspense boundary on this
+  // otherwise-static page. Init defaults to "admin" so the first client render
+  // matches the prerendered HTML (no hydration mismatch); this effect then
+  // syncs to the URL. The popstate listener covers external URL changes (e.g.
+  // editing the address bar); tab clicks use replaceState below, so they don't
+  // add their own back/forward history entries.
+  useEffect(() => {
+    const syncFromUrl = () => {
+      const tab = new URLSearchParams(window.location.search).get("tab");
+      if (SETTINGS_TABS.some((t) => t.id === tab)) {
+        setActiveTab(tab as SettingsTab);
+      }
+    };
+    syncFromUrl();
+    window.addEventListener("popstate", syncFromUrl);
+    return () => window.removeEventListener("popstate", syncFromUrl);
+  }, []);
+
+  const handleTabChange = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    // replaceState (not pushState): switching tabs updates the URL for reload /
+    // share, without pushing a history entry per click.
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", tab);
+    window.history.replaceState(null, "", `?${params.toString()}`);
+  };
 
   const {
     organizations,
@@ -72,7 +112,9 @@ export default function WorkspaceSettingsPage() {
       await renameOrganization(activeOrg.uuid, trimmed);
       toast.success("Workspace name updated");
     } catch (err) {
-      setRenameError(parseBackendErrorMessage(err, "Failed to rename workspace"));
+      setRenameError(
+        parseBackendErrorMessage(err, "Failed to rename workspace"),
+      );
     } finally {
       setIsRenaming(false);
     }
@@ -90,52 +132,83 @@ export default function WorkspaceSettingsPage() {
         </h1>
       }
     >
-      <div className="max-w-3xl mx-auto py-6 md:py-8 space-y-8">
+      <div className="py-6 md:py-8">
         {orgsLoading && !activeOrg ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <LoadingState className="min-h-[60vh]" />
         ) : !activeOrg ? (
           <p className="text-sm text-muted-foreground">
             No active workspace selected.
           </p>
         ) : (
-          <>
-            <section className="space-y-3">
-              <label className="block text-sm font-medium text-foreground">
-                Name
-              </label>
-              <div>
-                <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-                  <input
-                    type="text"
-                    value={nameInput}
-                    onChange={(e) => {
-                      setNameInput(e.target.value);
-                      setRenameError(null);
-                    }}
-                    disabled={isRenaming}
-                    className={`flex-1 h-10 px-3 rounded-md border bg-background text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 disabled:opacity-50 ${
-                      renameError
-                        ? "border-red-500/60 focus:ring-red-500/20"
-                        : "border-border focus:ring-foreground/10"
-                    }`}
-                  />
+          <div className="space-y-6 md:space-y-8">
+            <div className="flex items-center gap-4 md:gap-6 border-b border-border overflow-x-auto">
+              {SETTINGS_TABS.map((tab) => {
+                const isActive = activeTab === tab.id;
+                return (
                   <button
+                    key={tab.id}
                     type="button"
-                    onClick={handleRename}
-                    disabled={!isDirty || isRenaming || !nameInput.trim()}
-                    className="h-10 px-4 rounded-md text-sm font-medium bg-foreground text-background hover:opacity-90 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => handleTabChange(tab.id)}
+                    className={`pb-2 text-sm md:text-base font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                      isActive
+                        ? "text-foreground border-b-2 border-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
                   >
-                    {isRenaming ? "Saving..." : "Save"}
+                    {tab.label}
                   </button>
-                </div>
-                {renameError && (
-                  <p className="mt-1 text-[13px] text-red-500">{renameError}</p>
-                )}
-              </div>
-            </section>
+                );
+              })}
+            </div>
 
-            <MembersSection orgUuid={activeOrg.uuid} orgName={activeOrg.name} />
-          </>
+            {activeTab === "admin" ? (
+              <div className="max-w-2xl space-y-8">
+                <section className="space-y-3">
+                  <label className="block text-sm font-medium text-foreground">
+                    Name
+                  </label>
+                  <div>
+                    <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                      <input
+                        type="text"
+                        value={nameInput}
+                        onChange={(e) => {
+                          setNameInput(e.target.value);
+                          setRenameError(null);
+                        }}
+                        disabled={isRenaming}
+                        className={`flex-1 h-10 px-3 rounded-md border bg-background text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                          renameError
+                            ? "border-red-500/60 focus:ring-red-500/20"
+                            : "border-border focus:ring-foreground/10"
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleRename}
+                        disabled={!isDirty || isRenaming || !nameInput.trim()}
+                        className="h-10 px-4 rounded-md text-sm font-medium bg-foreground text-background hover:opacity-90 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isRenaming ? "Saving..." : "Save"}
+                      </button>
+                    </div>
+                    {renameError && (
+                      <p className="mt-1 text-[13px] text-red-500">
+                        {renameError}
+                      </p>
+                    )}
+                  </div>
+                </section>
+
+                <MembersSection
+                  orgUuid={activeOrg.uuid}
+                  orgName={activeOrg.name}
+                />
+              </div>
+            ) : (
+              <ApiKeysSection orgUuid={activeOrg.uuid} />
+            )}
+          </div>
         )}
       </div>
     </AppLayout>
@@ -306,7 +379,7 @@ function MembersSection({
 
       <div className="border border-border rounded-lg overflow-hidden">
         {isLoading && members.length === 0 ? (
-          <p className="px-4 py-6 text-sm text-muted-foreground">Loading…</p>
+          <LoadingState />
         ) : loadError ? (
           <p className="px-4 py-6 text-[13px] text-red-500">{loadError}</p>
         ) : members.length === 0 ? (
@@ -391,6 +464,206 @@ function MembersSection({
         }
         confirmText={isSelfRemoval ? "Leave" : "Remove"}
         isDeleting={isRemoving}
+      />
+    </section>
+  );
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function ApiKeysSection({ orgUuid }: { orgUuid: string }) {
+  const accessToken = useAccessToken();
+  const {
+    apiKeys,
+    isLoading,
+    error: loadError,
+    refetch,
+    createApiKey,
+    revokeApiKey,
+  } = useWorkspaceApiKeys(accessToken, orgUuid);
+
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [keyToRevoke, setKeyToRevoke] = useState<OrganizationApiKey | null>(
+    null,
+  );
+  const [isRevoking, setIsRevoking] = useState(false);
+
+  const handleRevoke = async () => {
+    if (!keyToRevoke) return;
+    setIsRevoking(true);
+    try {
+      await revokeApiKey(keyToRevoke.uuid);
+      setKeyToRevoke(null);
+    } catch (err) {
+      refetch();
+      toast.error(parseBackendErrorMessage(err, "Failed to revoke API key"));
+    } finally {
+      setIsRevoking(false);
+    }
+  };
+
+  // Hide the header (title + description + create button) when there are no
+  // keys — the EmptyState already provides a title, description and a create
+  // action, so the header would be redundant.
+  const hasKeys = apiKeys.length > 0;
+
+  return (
+    <section className="space-y-4">
+      {hasKeys && (
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base md:text-lg font-semibold text-foreground">
+              API keys
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Authenticate Calibrate (e.g. for Github Actions)
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsCreateOpen(true)}
+            className="shrink-0 h-10 px-4 rounded-md text-sm font-medium bg-foreground text-background hover:opacity-90 transition-colors cursor-pointer"
+          >
+            Create key
+          </button>
+        </div>
+      )}
+
+      {isLoading && apiKeys.length === 0 ? (
+        <LoadingState />
+      ) : loadError ? (
+        <div className="border border-border rounded-xl px-4 py-6 bg-muted/20">
+          <p className="text-[13px] text-red-500">{loadError}</p>
+        </div>
+      ) : apiKeys.length === 0 ? (
+        <EmptyState
+          icon={
+            <svg
+              className="w-7 h-7 text-muted-foreground"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
+              />
+            </svg>
+          }
+          title="No API keys yet"
+          description="Create an API key to authenticate Calibrate (e.g. for Github Actions)"
+          action={{
+            label: "Create key",
+            onClick: () => setIsCreateOpen(true),
+          }}
+        />
+      ) : (
+        <>
+          {/* Desktop table */}
+          <div className="hidden md:block border border-border rounded-xl overflow-hidden">
+            <div className="grid grid-cols-[1fr_1.5fr_160px_auto] gap-4 px-4 py-2 border-b border-border bg-muted/30">
+              <div className="text-sm font-medium text-muted-foreground">
+                Name
+              </div>
+              <div className="text-sm font-medium text-muted-foreground">
+                Value
+              </div>
+              <div className="text-sm font-medium text-muted-foreground">
+                Last used
+              </div>
+              <div className="w-[76px]" />
+            </div>
+            {apiKeys.map((key) => (
+              <div
+                key={key.uuid}
+                className="grid grid-cols-[1fr_1.5fr_160px_auto] gap-4 px-4 py-3 border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors items-center"
+              >
+                <p className="text-sm font-medium text-foreground truncate">
+                  {key.name}
+                </p>
+                <p className="text-sm text-muted-foreground font-mono truncate">
+                  {key.masked_key}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {key.last_used_at ? formatDate(key.last_used_at) : "Never"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setKeyToRevoke(key)}
+                  title="Revoke this key"
+                  className="justify-self-end h-9 px-3 rounded-md text-xs font-medium text-red-500 bg-red-500/10 hover:bg-red-500/20 transition-colors cursor-pointer"
+                >
+                  Revoke
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Mobile cards */}
+          <div className="md:hidden space-y-3">
+            {apiKeys.map((key) => (
+              <div
+                key={key.uuid}
+                className="border border-border rounded-lg overflow-hidden bg-background"
+              >
+                <div className="p-4">
+                  <div className="text-sm font-medium text-foreground mb-1 truncate">
+                    {key.name}
+                  </div>
+                  <div className="text-xs text-muted-foreground font-mono mb-1 truncate">
+                    {key.masked_key}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {key.last_used_at
+                      ? `Last used ${formatDate(key.last_used_at)}`
+                      : "Never used"}
+                  </div>
+                </div>
+                <div className="px-4 pb-3 pt-0">
+                  <button
+                    type="button"
+                    onClick={() => setKeyToRevoke(key)}
+                    className="w-full h-8 text-xs font-medium text-red-500 bg-red-500/10 hover:bg-red-500/20 rounded-md transition-colors cursor-pointer"
+                  >
+                    Revoke
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <CreateApiKeyDialog
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        onCreate={createApiKey}
+      />
+
+      <DeleteConfirmationDialog
+        isOpen={!!keyToRevoke}
+        onClose={() => {
+          if (!isRevoking) setKeyToRevoke(null);
+        }}
+        onConfirm={handleRevoke}
+        title="Revoke API key"
+        message={
+          keyToRevoke
+            ? `If you revoke this key, it will stop working immediately. This cannot be undone. Are you sure?`
+            : ""
+        }
+        confirmText="Revoke"
+        isDeleting={isRevoking}
       />
     </section>
   );

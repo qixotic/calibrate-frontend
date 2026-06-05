@@ -6,6 +6,8 @@ import {
   ACTIVE_ORG_CHANGED_EVENT,
   ORGANIZATIONS_CHANGED_EVENT,
   type Organization,
+  type OrganizationApiKey,
+  type OrganizationApiKeyWithSecret,
   type OrganizationMember,
   getActiveOrgUuid,
   notifyOrganizationsChanged,
@@ -318,4 +320,91 @@ export function useOrgMembers(
   );
 
   return { members, isLoading, error, refetch, addMember, removeMember };
+}
+
+type UseWorkspaceApiKeysReturn = {
+  apiKeys: OrganizationApiKey[];
+  isLoading: boolean;
+  error: string | null;
+  refetch: () => Promise<void>;
+  /** Returns the created key including its one-time plaintext secret. */
+  createApiKey: (name: string) => Promise<OrganizationApiKeyWithSecret>;
+  revokeApiKey: (keyUuid: string) => Promise<void>;
+};
+
+/**
+ * List + create + revoke API keys for the active workspace. Keys are scoped by
+ * the `X-Org-UUID` header (attached automatically in api.ts), so the endpoints
+ * are the bare `/api-keys` — NOT under `/organizations/...`, which would strip
+ * that header. The backend returns the full secret only in the create
+ * response; the list returns masked keys (`masked_key` / `last_four`).
+ *
+ * `orgUuid` isn't sent in the URL, but is kept as a gate + refetch dependency
+ * so the list reloads when the user switches workspaces.
+ */
+export function useWorkspaceApiKeys(
+  accessToken: string | null | undefined,
+  orgUuid: string | null,
+): UseWorkspaceApiKeysReturn {
+  const [apiKeys, setApiKeys] = useState<OrganizationApiKey[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    if (!accessToken || !orgUuid) {
+      setApiKeys([]);
+      setIsLoading(false);
+      return;
+    }
+    try {
+      setIsLoading(true);
+      setError(null);
+      const data = await apiGet<OrganizationApiKey[]>(
+        "/api-keys",
+        accessToken,
+      );
+      setApiKeys(data);
+    } catch (err) {
+      console.error("Error fetching API keys:", err);
+      setError(err instanceof Error ? err.message : "Failed to load API keys");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [accessToken, orgUuid]);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  const createApiKey = useCallback(
+    async (name: string): Promise<OrganizationApiKeyWithSecret> => {
+      if (!accessToken || !orgUuid) {
+        throw new Error("Not signed in");
+      }
+      const created = await apiPost<OrganizationApiKeyWithSecret>(
+        "/api-keys",
+        accessToken,
+        { name },
+      );
+      // Strip the one-time secret before storing in the list.
+      const { key: _key, ...masked } = created;
+      void _key;
+      setApiKeys((prev) => [...prev, masked]);
+      return created;
+    },
+    [accessToken, orgUuid],
+  );
+
+  const revokeApiKey = useCallback(
+    async (keyUuid: string): Promise<void> => {
+      if (!accessToken || !orgUuid) {
+        throw new Error("Not signed in");
+      }
+      await apiDelete(`/api-keys/${keyUuid}`, accessToken);
+      setApiKeys((prev) => prev.filter((k) => k.uuid !== keyUuid));
+    },
+    [accessToken, orgUuid],
+  );
+
+  return { apiKeys, isLoading, error, refetch, createApiKey, revokeApiKey };
 }
