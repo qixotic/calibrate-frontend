@@ -2080,8 +2080,10 @@ export function AddTestDialog({
                     {selectedTools.length === 0 ? (
                       <div className="bg-muted rounded-lg p-8 text-center ">
                         <p className="text-muted-foreground text-sm">
-                          If you leave this empty, the test will check that no
-                          tool has been called.
+                          Select which tool should be called and the expected
+                          parameters. If the agent does not call the tool or
+                          calls it with the wrong parameters, the test will
+                          fail.
                         </p>
                       </div>
                     ) : (
@@ -2335,10 +2337,10 @@ export function AddTestDialog({
                   {requireAssistantLastMessage
                     ? "Your evaluators read this whole conversation and evaluate the last agent message (the one highlighted) against the evaluators. Only that final reply is scored."
                     : activeTab === "conversation"
-                      ? "Given the conversation history, the agent generates a response and the full updated conversation is graded using the evaluators added to the test"
+                      ? "Given the conversation history, the agent's response is added to the conversation and the full updated conversation is graded using the evaluators added to the test"
                       : activeTab === "tool-invocation"
-                        ? "Given the conversation history, the agent makes a tool call which is checked against the expected tool calls configured for this test"
-                        : "Given the conversation history, the agent generates a response which is graded using the evaluators added to the test"}
+                        ? "Given the conversation history, check whether the agent calls the right tools with the expected parameters"
+                        : "Given the conversation history, the agent's response is graded using the evaluators added to the test"}
                 </p>
               </div>
             </div>
@@ -2949,7 +2951,10 @@ export function AddTestDialog({
                                   ? 1
                                   : 0) && (
                               <>
-                                <div className="relative" ref={toolCallAnchorRef}>
+                                <div
+                                  className="relative"
+                                  ref={toolCallAnchorRef}
+                                >
                                   <button
                                     onClick={() =>
                                       setAddMessageDropdownOpen(
@@ -3081,218 +3086,239 @@ export function AddTestDialog({
                                   {toolCallDropdownOpen &&
                                     typeof window !== "undefined" &&
                                     createPortal(
-                                    <>
-                                      <div
-                                        className="fixed inset-0 z-[150]"
-                                        onClick={() => {
-                                          setToolCallDropdownOpen(false);
-                                          setPendingToolCall(null);
-                                        }}
-                                      />
-                                      <div
-                                        style={(() => {
-                                          const r = toolCallAnchorRect;
-                                          if (!r) return { left: -9999, top: 0 };
-                                          const margin = 8;
-                                          const estHeight = 360;
-                                          const spaceBelow = window.innerHeight - r.bottom - margin;
-                                          const openAbove = spaceBelow < estHeight && r.top > spaceBelow;
-                                          const alignRight = message.role === "user";
-                                          return {
-                                            ...(openAbove
-                                              ? { bottom: window.innerHeight - r.top + margin }
-                                              : { top: r.bottom + margin }),
-                                            ...(alignRight
-                                              ? { right: window.innerWidth - r.right }
-                                              : { left: r.left }),
-                                          };
-                                        })()}
-                                      className="fixed bg-background border border-border rounded-xl shadow-xl z-[200] overflow-hidden min-w-[320px]"
-                                      >
-                                        {!pendingToolCall ? (
-                                          <ToolPicker
-                                            availableTools={availableTools}
-                                            isLoading={availableToolsLoading}
-                                            onSelectInbuiltTool={(
-                                              toolId,
-                                              toolName,
-                                            ) => {
-                                              addToolCallMessage(
+                                      <>
+                                        <div
+                                          className="fixed inset-0 z-[150]"
+                                          onClick={() => {
+                                            setToolCallDropdownOpen(false);
+                                            setPendingToolCall(null);
+                                          }}
+                                        />
+                                        <div
+                                          style={(() => {
+                                            const r = toolCallAnchorRect;
+                                            if (!r)
+                                              return { left: -9999, top: 0 };
+                                            const margin = 8;
+                                            const estHeight = 360;
+                                            const spaceBelow =
+                                              window.innerHeight -
+                                              r.bottom -
+                                              margin;
+                                            const openAbove =
+                                              spaceBelow < estHeight &&
+                                              r.top > spaceBelow;
+                                            const alignRight =
+                                              message.role === "user";
+                                            return {
+                                              ...(openAbove
+                                                ? {
+                                                    bottom:
+                                                      window.innerHeight -
+                                                      r.top +
+                                                      margin,
+                                                  }
+                                                : { top: r.bottom + margin }),
+                                              ...(alignRight
+                                                ? {
+                                                    right:
+                                                      window.innerWidth -
+                                                      r.right,
+                                                  }
+                                                : { left: r.left }),
+                                            };
+                                          })()}
+                                          className="fixed bg-background border border-border rounded-xl shadow-xl z-[200] overflow-hidden min-w-[320px]"
+                                        >
+                                          {!pendingToolCall ? (
+                                            <ToolPicker
+                                              availableTools={availableTools}
+                                              isLoading={availableToolsLoading}
+                                              onSelectInbuiltTool={(
                                                 toolId,
                                                 toolName,
-                                                [],
-                                              );
-                                            }}
-                                            onSelectCustomTool={(tool) => {
-                                              const isWebhook =
-                                                tool.config?.type === "webhook";
-                                              let allParams: Array<{
-                                                name: string;
-                                                value: string;
-                                                group?: string;
-                                              }> = [];
+                                              ) => {
+                                                addToolCallMessage(
+                                                  toolId,
+                                                  toolName,
+                                                  [],
+                                                );
+                                              }}
+                                              onSelectCustomTool={(tool) => {
+                                                const isWebhook =
+                                                  tool.config?.type ===
+                                                  "webhook";
+                                                let allParams: Array<{
+                                                  name: string;
+                                                  value: string;
+                                                  group?: string;
+                                                }> = [];
 
-                                              if (
-                                                isWebhook &&
-                                                tool.config?.webhook
-                                              ) {
-                                                // Extract webhook-specific parameters
-                                                const webhook =
-                                                  tool.config.webhook;
-
-                                                // Query parameters (for GET requests)
                                                 if (
-                                                  webhook.queryParameters &&
-                                                  Array.isArray(
-                                                    webhook.queryParameters,
-                                                  )
+                                                  isWebhook &&
+                                                  tool.config?.webhook
                                                 ) {
-                                                  webhook.queryParameters.forEach(
-                                                    (p: any) => {
-                                                      allParams.push({
-                                                        name:
-                                                          p.id || p.name || "",
-                                                        value: "",
-                                                        group: "query",
-                                                      });
-                                                    },
-                                                  );
-                                                }
+                                                  // Extract webhook-specific parameters
+                                                  const webhook =
+                                                    tool.config.webhook;
 
-                                                // Body parameters (for POST requests)
-                                                if (
-                                                  webhook.body?.parameters &&
-                                                  Array.isArray(
-                                                    webhook.body.parameters,
-                                                  )
-                                                ) {
-                                                  webhook.body.parameters.forEach(
-                                                    (p: any) => {
-                                                      allParams.push({
-                                                        name:
-                                                          p.id || p.name || "",
-                                                        value: "",
-                                                        group: "body",
-                                                      });
-                                                    },
-                                                  );
-                                                }
-                                                // Note: Headers are not shown in conversation history UI
-                                              } else {
-                                                // Structured output tool - use regular parameters
-                                                const params =
-                                                  tool.config?.parameters;
-                                                if (Array.isArray(params)) {
-                                                  allParams = params.map(
-                                                    (p: any) => ({
-                                                      name:
-                                                        p.id || p.name || "",
-                                                      value: "",
-                                                    }),
-                                                  );
+                                                  // Query parameters (for GET requests)
+                                                  if (
+                                                    webhook.queryParameters &&
+                                                    Array.isArray(
+                                                      webhook.queryParameters,
+                                                    )
+                                                  ) {
+                                                    webhook.queryParameters.forEach(
+                                                      (p: any) => {
+                                                        allParams.push({
+                                                          name:
+                                                            p.id ||
+                                                            p.name ||
+                                                            "",
+                                                          value: "",
+                                                          group: "query",
+                                                        });
+                                                      },
+                                                    );
+                                                  }
+
+                                                  // Body parameters (for POST requests)
+                                                  if (
+                                                    webhook.body?.parameters &&
+                                                    Array.isArray(
+                                                      webhook.body.parameters,
+                                                    )
+                                                  ) {
+                                                    webhook.body.parameters.forEach(
+                                                      (p: any) => {
+                                                        allParams.push({
+                                                          name:
+                                                            p.id ||
+                                                            p.name ||
+                                                            "",
+                                                          value: "",
+                                                          group: "body",
+                                                        });
+                                                      },
+                                                    );
+                                                  }
+                                                  // Note: Headers are not shown in conversation history UI
                                                 } else {
-                                                  const propsObj =
-                                                    tool.config?.parameters
-                                                      ?.properties ||
-                                                    tool.config?.function
-                                                      ?.parameters
-                                                      ?.properties ||
-                                                    tool.config?.properties ||
-                                                    tool.config?.parameters ||
-                                                    {};
-                                                  allParams = Object.keys(
-                                                    propsObj,
-                                                  ).map((name) => ({
-                                                    name,
-                                                    value: "",
-                                                  }));
+                                                  // Structured output tool - use regular parameters
+                                                  const params =
+                                                    tool.config?.parameters;
+                                                  if (Array.isArray(params)) {
+                                                    allParams = params.map(
+                                                      (p: any) => ({
+                                                        name:
+                                                          p.id || p.name || "",
+                                                        value: "",
+                                                      }),
+                                                    );
+                                                  } else {
+                                                    const propsObj =
+                                                      tool.config?.parameters
+                                                        ?.properties ||
+                                                      tool.config?.function
+                                                        ?.parameters
+                                                        ?.properties ||
+                                                      tool.config?.properties ||
+                                                      tool.config?.parameters ||
+                                                      {};
+                                                    allParams = Object.keys(
+                                                      propsObj,
+                                                    ).map((name) => ({
+                                                      name,
+                                                      value: "",
+                                                    }));
+                                                  }
                                                 }
-                                              }
 
-                                              addToolCallMessage(
-                                                tool.uuid,
-                                                tool.name,
-                                                allParams,
-                                                isWebhook,
-                                              );
-                                            }}
-                                          />
-                                        ) : (
-                                          <div className="p-4">
-                                            <div className="flex items-center gap-2 mb-4">
+                                                addToolCallMessage(
+                                                  tool.uuid,
+                                                  tool.name,
+                                                  allParams,
+                                                  isWebhook,
+                                                );
+                                              }}
+                                            />
+                                          ) : (
+                                            <div className="p-4">
+                                              <div className="flex items-center gap-2 mb-4">
+                                                <button
+                                                  onClick={() =>
+                                                    setPendingToolCall(null)
+                                                  }
+                                                  className="text-muted-foreground hover:text-foreground transition-colors"
+                                                >
+                                                  <svg
+                                                    className="w-4 h-4"
+                                                    fill="none"
+                                                    viewBox="0 0 24 24"
+                                                    stroke="currentColor"
+                                                    strokeWidth={2}
+                                                  >
+                                                    <path
+                                                      strokeLinecap="round"
+                                                      strokeLinejoin="round"
+                                                      d="M15.75 19.5L8.25 12l7.5-7.5"
+                                                    />
+                                                  </svg>
+                                                </button>
+                                                <h4 className="text-sm font-medium text-foreground">
+                                                  {pendingToolCall.toolName}
+                                                </h4>
+                                              </div>
+                                              <p className="text-xs text-muted-foreground mb-3">
+                                                Enter values for parameters:
+                                              </p>
+                                              <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                                                {pendingToolCall.params.map(
+                                                  (param, idx) => (
+                                                    <div key={idx}>
+                                                      <label className="block text-xs text-muted-foreground mb-1">
+                                                        {param.name}
+                                                      </label>
+                                                      <input
+                                                        type="text"
+                                                        value={param.value}
+                                                        onChange={(e) => {
+                                                          const newParams = [
+                                                            ...pendingToolCall.params,
+                                                          ];
+                                                          newParams[idx].value =
+                                                            e.target.value;
+                                                          setPendingToolCall({
+                                                            ...pendingToolCall,
+                                                            params: newParams,
+                                                          });
+                                                        }}
+                                                        placeholder={`Enter ${param.name}`}
+                                                        className="w-full h-9 px-3 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border border-border focus:outline-none focus:ring-1 focus:ring-accent"
+                                                      />
+                                                    </div>
+                                                  ),
+                                                )}
+                                              </div>
                                               <button
                                                 onClick={() =>
-                                                  setPendingToolCall(null)
+                                                  addToolCallMessage(
+                                                    pendingToolCall.toolId,
+                                                    pendingToolCall.toolName,
+                                                    pendingToolCall.params,
+                                                  )
                                                 }
-                                                className="text-muted-foreground hover:text-foreground transition-colors"
+                                                className="w-full mt-4 h-9 px-4 rounded-lg text-sm font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer"
                                               >
-                                                <svg
-                                                  className="w-4 h-4"
-                                                  fill="none"
-                                                  viewBox="0 0 24 24"
-                                                  stroke="currentColor"
-                                                  strokeWidth={2}
-                                                >
-                                                  <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    d="M15.75 19.5L8.25 12l7.5-7.5"
-                                                  />
-                                                </svg>
+                                                Add tool call
                                               </button>
-                                              <h4 className="text-sm font-medium text-foreground">
-                                                {pendingToolCall.toolName}
-                                              </h4>
                                             </div>
-                                            <p className="text-xs text-muted-foreground mb-3">
-                                              Enter values for parameters:
-                                            </p>
-                                            <div className="space-y-2 max-h-[200px] overflow-y-auto">
-                                              {pendingToolCall.params.map(
-                                                (param, idx) => (
-                                                  <div key={idx}>
-                                                    <label className="block text-xs text-muted-foreground mb-1">
-                                                      {param.name}
-                                                    </label>
-                                                    <input
-                                                      type="text"
-                                                      value={param.value}
-                                                      onChange={(e) => {
-                                                        const newParams = [
-                                                          ...pendingToolCall.params,
-                                                        ];
-                                                        newParams[idx].value =
-                                                          e.target.value;
-                                                        setPendingToolCall({
-                                                          ...pendingToolCall,
-                                                          params: newParams,
-                                                        });
-                                                      }}
-                                                      placeholder={`Enter ${param.name}`}
-                                                      className="w-full h-9 px-3 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border border-border focus:outline-none focus:ring-1 focus:ring-accent"
-                                                    />
-                                                  </div>
-                                                ),
-                                              )}
-                                            </div>
-                                            <button
-                                              onClick={() =>
-                                                addToolCallMessage(
-                                                  pendingToolCall.toolId,
-                                                  pendingToolCall.toolName,
-                                                  pendingToolCall.params,
-                                                )
-                                              }
-                                              className="w-full mt-4 h-9 px-4 rounded-lg text-sm font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer"
-                                            >
-                                              Add tool call
-                                            </button>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </>,
-                                    document.body,
-                                  )}
+                                          )}
+                                        </div>
+                                      </>,
+                                      document.body,
+                                    )}
                                 </div>
                               </>
                             )}
