@@ -47,9 +47,10 @@ import {
   agreementColor,
 } from "@/components/human-labelling/AgreementStatCard";
 import { EmptyState } from "@/components/ui/LoadingState";
+import { NotFoundPage } from "@/components/NotFoundPage";
 import { DeleteIconButton } from "@/components/ui/DeleteIconButton";
 import { DuplicateIconButton } from "@/components/ui/DuplicateIconButton";
-import { useAccessToken } from "@/hooks";
+import { useAccessToken, usePageErrorState } from "@/hooks";
 import { apiClient } from "@/lib/api";
 import { useSidebarState } from "@/lib/sidebar";
 
@@ -1176,6 +1177,8 @@ function LabellingTaskPageInner() {
   const [task, setTask] = useState<LabellingTask | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { errorCode, reset: resetErrorCode, captureError } =
+    usePageErrorState();
   /** False until the first task GET for this route finishes (avoids empty-state flash on Items/Jobs). */
   const [taskFetchCompleted, setTaskFetchCompleted] = useState(false);
 
@@ -1298,6 +1301,7 @@ function LabellingTaskPageInner() {
     if (!accessToken || !uuid) return;
     setLoading(true);
     setError(null);
+    resetErrorCode();
     try {
       const data = await apiClient<LabellingTask>(
         `/annotation-tasks/${uuid}`,
@@ -1305,6 +1309,7 @@ function LabellingTaskPageInner() {
       );
       setTask(data);
     } catch (err) {
+      if (captureError(err)) return;
       const msg = parseApiError(err, "Failed to load task");
       setError(msg);
       toast.error(msg);
@@ -1312,7 +1317,7 @@ function LabellingTaskPageInner() {
       setLoading(false);
       setTaskFetchCompleted(true);
     }
-  }, [accessToken, uuid]);
+  }, [accessToken, uuid, resetErrorCode, captureError]);
 
   // Reorder linked evaluators. `targetOrder` is the new desired ordered
   // list of uuids — must be the exact same set currently linked to the
@@ -2249,6 +2254,18 @@ function LabellingTaskPageInner() {
       All tasks
     </button>
   );
+
+  if (errorCode) {
+    return (
+      <NotFoundPage
+        activeItem="human-alignment"
+        errorCode={errorCode}
+        sidebarOpen={sidebarOpen}
+        onSidebarToggle={() => setSidebarOpen(!sidebarOpen)}
+        customHeader={customHeader}
+      />
+    );
+  }
 
   return (
     <AppLayout

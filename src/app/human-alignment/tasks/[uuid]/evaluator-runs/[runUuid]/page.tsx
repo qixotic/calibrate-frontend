@@ -5,7 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import { AppLayout } from "@/components/AppLayout";
 import { ShareButton } from "@/components/ShareButton";
 import { RetryIcon } from "@/components/ui";
-import { useAccessToken } from "@/hooks";
+import { NotFoundPage } from "@/components/NotFoundPage";
+import { useAccessToken, usePageErrorState } from "@/hooks";
 import { apiClient } from "@/lib/api";
 import { useSidebarState } from "@/lib/sidebar";
 import { type Item } from "@/components/human-labelling/AnnotationJobView";
@@ -89,6 +90,8 @@ export default function EvaluatorRunDetailPage() {
   }, [job]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { errorCode, reset: resetErrorCode, captureError } =
+    usePageErrorState();
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const startTime = useRef(Date.now());
@@ -121,14 +124,19 @@ export default function EvaluatorRunDetailPage() {
       );
       setJob(data);
       setError(null);
+      resetErrorCode();
       setLoading(false);
       return data;
     } catch (err) {
+      if (captureError(err)) {
+        setLoading(false);
+        return null;
+      }
       setError(parseApiError(err, "Failed to load run"));
       setLoading(false);
       return null;
     }
-  }, [accessToken, taskUuid, runUuid]);
+  }, [accessToken, taskUuid, runUuid, resetErrorCode, captureError]);
 
   // Fetch the task for type (and fallback item list when the job has no `items[]`).
   useEffect(() => {
@@ -456,6 +464,18 @@ export default function EvaluatorRunDetailPage() {
       Back to evaluation runs
     </button>
   );
+
+  if (errorCode) {
+    return (
+      <NotFoundPage
+        activeItem="human-alignment"
+        errorCode={errorCode}
+        sidebarOpen={sidebarOpen}
+        onSidebarToggle={() => setSidebarOpen(!sidebarOpen)}
+        customHeader={customHeader}
+      />
+    );
+  }
 
   return (
     <AppLayout

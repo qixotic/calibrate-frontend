@@ -12,8 +12,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useAccessToken } from "@/hooks";
+import { useAccessToken, usePageErrorState } from "@/hooks";
 import { AppLayout } from "@/components/AppLayout";
+import { NotFoundState } from "@/components/ui";
 import { useSidebarState } from "@/lib/sidebar";
 import {
   DefaultPill,
@@ -172,6 +173,8 @@ function EvaluatorDetailPageInner() {
   const [evaluator, setEvaluator] = useState<EvaluatorDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { errorCode, reset: resetErrorCode, captureResponse } =
+    usePageErrorState();
   const [settingLiveUuid, setSettingLiveUuid] = useState<string | null>(null);
   const [activeTab, setActiveTab] =
     useState<EvaluatorPageTab>(resolvedInitialTab);
@@ -239,6 +242,7 @@ function EvaluatorDetailPageInner() {
       try {
         setLoading(true);
         setError(null);
+        resetErrorCode();
         const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
         if (!backendUrl) throw new Error("BACKEND_URL is not set");
 
@@ -249,13 +253,7 @@ function EvaluatorDetailPageInner() {
           },
         });
 
-        if (res.status === 401) {
-          await signOut({ callbackUrl: "/login" });
-          return;
-        }
-        if (res.status === 404) {
-          throw new Error("Evaluator not found");
-        }
+        if (captureResponse(res)) return;
         if (!res.ok) throw new Error("Failed to fetch evaluator");
 
         const data: EvaluatorDetail = await res.json();
@@ -271,7 +269,7 @@ function EvaluatorDetailPageInner() {
     };
 
     fetchEvaluator();
-  }, [backendAccessToken, uuid]);
+  }, [backendAccessToken, uuid, resetErrorCode, captureResponse]);
 
   const isDefault = !evaluator?.owner_user_id;
 
@@ -643,18 +641,41 @@ function EvaluatorDetailPageInner() {
     return d.toLocaleString();
   };
 
+  const customHeader = (
+    <button
+      onClick={() => router.back()}
+      className="inline-flex items-center gap-1.5 px-2 h-8 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+    >
+      <svg
+        className="w-4 h-4"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={2}
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M15 19l-7-7 7-7"
+        />
+      </svg>
+      Back to evaluators
+    </button>
+  );
+
   return (
     <AppLayout
       activeItem="evaluators"
       onItemChange={(itemId) => router.push(`/${itemId}`)}
       sidebarOpen={sidebarOpen}
       onSidebarToggle={() => setSidebarOpen(!sidebarOpen)}
+      customHeader={customHeader}
     >
       <div className="space-y-4 md:space-y-6 py-4 md:py-6">
-        {/* Back */}
+        {/* Mobile-only back button — AppLayout hides `customHeader` below md. */}
         <button
           onClick={() => router.back()}
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="md:hidden inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
         >
           <svg
             className="w-4 h-4"
@@ -672,7 +693,9 @@ function EvaluatorDetailPageInner() {
           Back to evaluators
         </button>
 
-        {loading ? (
+        {errorCode ? (
+          <NotFoundState errorCode={errorCode} />
+        ) : loading ? (
           <div className="flex items-center justify-center gap-3 py-8">
             <svg
               className="w-5 h-5 animate-spin"
