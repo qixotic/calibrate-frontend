@@ -271,6 +271,90 @@ function formatParamValue(value: any): string {
   return String(value);
 }
 
+// True when a value is an expected-argument match spec — a dict carrying a
+// `match_type` key (`exact` or `llm_judge`).
+function isMatchSpec(
+  v: any,
+): v is { match_type: string; value?: any; criteria?: string } {
+  return (
+    v !== null &&
+    typeof v === "object" &&
+    !Array.isArray(v) &&
+    "match_type" in v
+  );
+}
+
+// Read-only render of an expected argument (name + value), mirroring the
+// add-test dialog's per-parameter controls: the parameter name sits on one line
+// with a match-mode chip ("Is exactly" / "satisfies the criteria" / "Is null"),
+// and the value or criteria below. Object-typed params recurse inside a boxed
+// group so each nested field shows its own mode; bare literals (legacy expected
+// values) fall back to a plain value box.
+function ExpectedArgValue({ name, value }: { name: string; value: any }) {
+  const nameLabel = (
+    <label className="text-sm font-medium text-foreground">{name}</label>
+  );
+
+  if (isMatchSpec(value)) {
+    const isLlm = value.match_type === "llm_judge";
+    const isNull = !isLlm && value.value === null;
+    const label = isLlm
+      ? "satisfies the criteria"
+      : isNull
+        ? "Is null"
+        : "Is exactly";
+    const text = isLlm
+      ? typeof value.criteria === "string"
+        ? value.criteria
+        : ""
+      : formatParamValue(value.value);
+    const multiLine = text.includes("\n");
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          {nameLabel}
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-foreground text-background">
+            {label}
+          </span>
+        </div>
+        <div
+          className={`px-3 py-2 rounded-lg text-sm bg-background border border-border text-foreground whitespace-pre-wrap break-words ${
+            multiLine ? "font-mono text-xs" : ""
+          }`}
+        >
+          {text}
+        </div>
+      </div>
+    );
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return (
+      <div className="space-y-1">
+        {nameLabel}
+        <div className="space-y-3 rounded-xl border border-border bg-background/50 p-3">
+          {Object.entries(value).map(([k, v]) => (
+            <ExpectedArgValue key={k} name={k} value={v} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  const text = formatParamValue(value);
+  const multiLine = text.includes("\n");
+  return (
+    <div className="space-y-1">
+      {nameLabel}
+      <div
+        className={`px-3 py-2 rounded-lg text-sm bg-background border border-border text-foreground whitespace-pre-wrap break-words ${
+          multiLine ? "font-mono text-xs" : ""
+        }`}
+      >
+        {text}
+      </div>
+    </div>
+  );
+}
+
 // Normalize any tool-call-shaped value into `{ toolName, args }`. The
 // backend has shipped tool_calls in a few different shapes over time
 // (`{tool, arguments}`, OpenAI's `{name, arguments}`, and nested
@@ -339,49 +423,100 @@ export function ToolCallCard({
   toolName,
   args,
   output,
+  expected = false,
 }: {
   toolName: string;
   args: Record<string, any>;
   /** The tool's execution result (agent-connection tests only). Rendered
    * only when present — `undefined`/`null` hides the result section. */
   output?: unknown;
+  /** When true, render each argument as an expected match spec (mode pill +
+   * value / criteria) instead of a plain value. Used for "Expected Tool
+   * Calls"; actual agent tool calls leave this false. */
+  expected?: boolean;
 }) {
   const hasOutput = output !== undefined && output !== null;
   const outputValue = hasOutput ? formatParamValue(output) : "";
   const outputIsMultiLine = outputValue.includes("\n");
+  const paramEntries = Object.entries(args).filter(
+    ([paramName]) => paramName !== "headers",
+  );
+  const hasParams = paramEntries.length > 0;
+  // Expected tool calls collapse the whole parameter block behind one toggle.
+  const collapsible = expected && hasParams;
+  const [open, setOpen] = useState(true);
+  const showParams = hasParams && (!collapsible || open);
   return (
     <div className="bg-muted border border-border rounded-2xl p-4">
-      <div className="flex items-center gap-2 mb-2">
+      <div
+        className={`flex items-center gap-2 ${showParams || hasOutput ? "mb-2" : ""}`}
+      >
         <ToolIcon className="w-4 h-4 text-muted-foreground" />
         <span className="text-sm font-medium text-foreground">{toolName}</span>
+        {collapsible && (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-label={open ? "Collapse parameters" : "Expand parameters"}
+            aria-expanded={open}
+            className="ml-auto flex-shrink-0 inline-flex items-center justify-center px-2 py-1 rounded-md bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d={open ? "M4.5 15.75l7.5-7.5 7.5 7.5" : "M19.5 8.25l-7.5 7.5-7.5-7.5"}
+              />
+            </svg>
+          </button>
+        )}
       </div>
-      {Object.keys(args).filter((k) => k !== "headers").length > 0 && (
+      {collapsible && !open && (
+        <p className="text-xs text-muted-foreground">
+          {paramEntries.length} parameter{paramEntries.length === 1 ? "" : "s"}{" "}
+          hidden
+        </p>
+      )}
+      {showParams && (
         <div className="space-y-3 mt-3">
-          {Object.entries(args)
-            .filter(([paramName]) => paramName !== "headers")
-            .map(([paramName, paramValue]) => {
-              const displayValue = formatParamValue(paramValue);
-              const isMultiLine = displayValue.includes("\n");
+          {paramEntries.map(([paramName, paramValue]) => {
+            if (expected) {
               return (
-                <div key={paramName}>
-                  <label className="block text-sm font-medium text-muted-foreground mb-1.5">
-                    {paramName}
-                  </label>
-                  <div
-                    className={`px-3 py-2 rounded-lg text-sm bg-background border border-border text-foreground whitespace-pre-wrap break-all ${
-                      isMultiLine ? "font-mono text-xs" : ""
-                    }`}
-                  >
-                    {displayValue}
-                  </div>
-                </div>
+                <ExpectedArgValue
+                  key={paramName}
+                  name={paramName}
+                  value={paramValue}
+                />
               );
-            })}
+            }
+            const displayValue = formatParamValue(paramValue);
+            const isMultiLine = displayValue.includes("\n");
+            return (
+              <div key={paramName}>
+                <label className="block text-sm font-medium text-foreground mb-1.5">
+                  {paramName}
+                </label>
+                <div
+                  className={`px-3 py-2 rounded-lg text-sm bg-background border border-border text-foreground whitespace-pre-wrap break-all ${
+                    isMultiLine ? "font-mono text-xs" : ""
+                  }`}
+                >
+                  {displayValue}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
       {hasOutput && (
         <div className="mt-3 pt-3 border-t border-border">
-          <label className="block text-sm font-medium text-muted-foreground mb-1.5">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             Output
           </label>
           <div
@@ -1044,7 +1179,12 @@ export function EvaluationCriteriaPanel({
               {evaluation!.tool_calls!.map((tc, i) => {
                 const { toolName, args } = normalizeToolCall(tc);
                 return (
-                  <ToolCallCard key={i} toolName={toolName} args={args} />
+                  <ToolCallCard
+                    key={i}
+                    toolName={toolName}
+                    args={args}
+                    expected
+                  />
                 );
               })}
             </div>

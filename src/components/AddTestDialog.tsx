@@ -39,10 +39,30 @@ const EXPECTED_PARAM_TYPES = [
   "array",
 ] as const;
 
+// How a leaf parameter's expected value is matched against the actual tool call:
+// `exact` compares the literal value, `llm_judge` hands the actual value to an
+// LLM along with the user's free-text criteria. Booleans are always `exact`.
+type MatchType = "exact" | "llm_judge";
+
+// The UI-level match mode shown in the per-parameter dropdown. "null" is a
+// presentation-only variant of an exact match (emitted as value: null).
+type MatchMode = "exact" | "llm_judge" | "null";
+
 type ExpectedParam = {
   id: string;
   name: string;
   value: string;
+  // Match strategy for this leaf row. Always `exact` for objects (containers)
+  // and booleans. Drives whether the value box or the criteria box is shown.
+  matchType: MatchType;
+  // Free-text judging criteria, used only when `matchType === "llm_judge"`.
+  criteria: string;
+  // When true, the expected value is `null` — the value field is disabled and
+  // the row emits `{ match_type: "exact", value: null }`. Exact-match only.
+  isNull?: boolean;
+  // Optional per-parameter judge model override (round-tripped from saved
+  // tests; not surfaced as an input in the UI).
+  judgeModel?: string;
   required: boolean;
   // JSON-schema data type ("string", "integer", "object", "array", …). Drives
   // the type picker for custom rows and how the value is coerced on save.
@@ -53,6 +73,33 @@ type ExpectedParam = {
   // arbitrary key/value rows under them.
   allowCustomKeys: boolean;
   properties?: ExpectedParam[];
+};
+
+// Read a saved tool-call argument value into a leaf row's match fields. Argument
+// values may be a literal (legacy exact match), an explicit
+// `{ match_type: "exact", value }`, or `{ match_type: "llm_judge", criteria,
+// judge_model? }`. A dict containing a `match_type` key is always a spec.
+const parseArgMatch = (
+  v: any,
+): { matchType: MatchType; value: any; criteria: string; judgeModel?: string } => {
+  if (
+    v !== null &&
+    typeof v === "object" &&
+    !Array.isArray(v) &&
+    "match_type" in v
+  ) {
+    if (v.match_type === "llm_judge") {
+      return {
+        matchType: "llm_judge",
+        value: undefined,
+        criteria: typeof v.criteria === "string" ? v.criteria : "",
+        judgeModel: typeof v.judge_model === "string" ? v.judge_model : undefined,
+      };
+    }
+    // Explicit exact spec — unwrap to the literal value.
+    return { matchType: "exact", value: v.value, criteria: "" };
+  }
+  return { matchType: "exact", value: v, criteria: "" };
 };
 
 // Best-effort JSON data type for a saved argument value (edit mode).
@@ -136,6 +183,8 @@ const normalizedToExpectedParam = (n: NormalizedToolParam): ExpectedParam => {
     id: newExpParamId(),
     name: n.name,
     value: "",
+    matchType: "exact",
+    criteria: "",
     required: n.required,
     dataType: n.dataType,
     isObject,
@@ -160,6 +209,22 @@ const buildExpectedParamsFromToolConfig = (
   return { params, allowCustom };
 };
 
+// Pick the parameters to pre-select when a tool is first added. Optional params
+// start out unselected (offered as add-back chips); only required ones are
+// shown. If a level has no required params at all, the first one is selected so
+// the form isn't empty. Applied recursively to nested object properties.
+const defaultSelectedParams = (
+  params: ExpectedParam[],
+): ExpectedParam[] => {
+  const required = params.filter((p) => p.required);
+  const chosen = required.length > 0 ? required : params.slice(0, 1);
+  return chosen.map((p) =>
+    p.isObject
+      ? { ...p, properties: defaultSelectedParams(p.properties || []) }
+      : p,
+  );
+};
+
 // Deep-clone an expected-parameter node, assigning fresh ids throughout so the
 // result can be safely re-inserted into the tree (used when re-adding a
 // previously-removed optional schema parameter).
@@ -167,6 +232,8 @@ const cloneExpParamFresh = (param: ExpectedParam): ExpectedParam => ({
   ...param,
   id: newExpParamId(),
   value: "",
+  criteria: "",
+  isNull: false,
   properties: param.properties
     ? param.properties.map(cloneExpParamFresh)
     : param.properties,
@@ -180,6 +247,8 @@ const makeCustomParam = (dataType: string = "string"): ExpectedParam => {
     name: "",
     // Booleans default to "true" since the only valid values are true/false.
     value: dataType === "boolean" ? "true" : "",
+    matchType: "exact",
+    criteria: "",
     required: false,
     dataType,
     isObject,
@@ -190,12 +259,32 @@ const makeCustomParam = (dataType: string = "string"): ExpectedParam => {
 };
 
 // Build a custom param row from a saved argument value, inferring its type.
-const customParamFromArg = (name: string, v: any): ExpectedParam => {
+const customParamFromArg = (name: string, raw: any): ExpectedParam => {
+  const { matchType, value: v, criteria, judgeModel } = parseArgMatch(raw);
+  if (matchType === "llm_judge") {
+    return {
+      id: newExpParamId(),
+      name,
+      value: "",
+      matchType: "llm_judge",
+      criteria,
+      judgeModel,
+      required: false,
+      dataType: "string",
+      isObject: false,
+      custom: true,
+      allowCustomKeys: false,
+      properties: undefined,
+    };
+  }
   const isObj = v !== null && typeof v === "object" && !Array.isArray(v);
   return {
     id: newExpParamId(),
     name,
-    value: isObj ? "" : expectedValueToString(v),
+    value: isObj || v === null ? "" : expectedValueToString(v),
+    matchType: "exact",
+    criteria: "",
+    isNull: v === null,
     required: false,
     dataType: inferExpectedDataType(v),
     isObject: isObj,
@@ -227,16 +316,35 @@ const overlayArgsOntoParams = (
       if (p.required) merged.push(p);
       continue;
     }
-    const v = args[p.name];
+    const rawVal = args[p.name];
     if (p.isObject) {
+      // Objects are containers; if a saved value arrived wrapped in an explicit
+      // exact spec, unwrap it before recursing into the nested properties.
+      const unwrapped = parseArgMatch(rawVal).value;
       const childArgs =
-        v !== null && typeof v === "object" && !Array.isArray(v) ? v : {};
+        unwrapped !== null &&
+        typeof unwrapped === "object" &&
+        !Array.isArray(unwrapped)
+          ? unwrapped
+          : {};
       merged.push({
         ...p,
         properties: overlayArgsOntoParams(p.properties || [], childArgs),
       });
     } else {
-      merged.push({ ...p, value: expectedValueToString(v) });
+      const { matchType, value, criteria, judgeModel } = parseArgMatch(rawVal);
+      const isNull = matchType === "exact" && value === null;
+      merged.push({
+        ...p,
+        matchType,
+        criteria,
+        judgeModel,
+        isNull,
+        value:
+          matchType === "llm_judge" || isNull
+            ? ""
+            : expectedValueToString(value),
+      });
     }
   }
 
@@ -298,8 +406,11 @@ const addExpParamAtPath = (
 };
 
 // Convert the expected-parameter tree into the `arguments` object sent to the
-// backend. Empty optional/custom rows are skipped; values are parsed as JSON
-// when possible so numbers/booleans/objects round-trip.
+// backend. Objects recurse into a nested container; leaf rows are always emitted
+// as an explicit match spec — `{ match_type: "exact", value }` or
+// `{ match_type: "llm_judge", criteria, judge_model? }` — never a bare literal.
+// Empty optional/custom rows are skipped; exact values are parsed as JSON when
+// possible so numbers/booleans/objects round-trip.
 const buildArgsFromExpectedParams = (
   params: ExpectedParam[],
 ): Record<string, any> => {
@@ -309,9 +420,23 @@ const buildArgsFromExpectedParams = (
     if (!name) continue;
     if (p.isObject) {
       obj[name] = buildArgsFromExpectedParams(p.properties || []);
+    } else if (p.matchType === "llm_judge") {
+      if (!p.criteria.trim() && !p.required) continue;
+      const spec: Record<string, any> = {
+        match_type: "llm_judge",
+        criteria: p.criteria.trim(),
+      };
+      if (p.judgeModel?.trim()) spec.judge_model = p.judgeModel.trim();
+      obj[name] = spec;
+    } else if (p.isNull) {
+      // Explicit null assertion — always emitted, even for optional params.
+      obj[name] = { match_type: "exact", value: null };
     } else {
       if (!p.value.trim() && !p.required) continue;
-      obj[name] = coerceExpectedValue(p.value, p.dataType);
+      obj[name] = {
+        match_type: "exact",
+        value: coerceExpectedValue(p.value, p.dataType),
+      };
     }
   }
   return obj;
@@ -327,19 +452,106 @@ const hasInvalidExpectedParams = (params: ExpectedParam[]): boolean => {
       continue;
     }
     const named = p.name.trim();
-    const valued = p.value.trim();
+    // The required/filled field depends on the match strategy: criteria for an
+    // LLM judge, the expected value otherwise. A null assertion always counts
+    // as filled.
+    const filled =
+      p.matchType === "llm_judge"
+        ? p.criteria.trim()
+        : p.isNull
+          ? "null"
+          : p.value.trim();
     if (p.custom) {
       // A fully-blank custom row is ignored (not yet used).
-      if (!named && !valued) continue;
-      if (!named || !valued) return true;
-    } else if (!valued) {
+      if (!named && !filled) continue;
+      if (!named || !filled) return true;
+    } else if (!filled) {
       return true;
     }
-    // A filled-in value must also be well-formed for its type.
-    if (expectedValueTypeError(p.value, p.dataType)) return true;
+    // A filled-in exact value must also be well-formed for its type.
+    if (
+      p.matchType !== "llm_judge" &&
+      !p.isNull &&
+      expectedValueTypeError(p.value, p.dataType)
+    )
+      return true;
   }
   return false;
 };
+
+// Add-back chips for removed optional params. Clamped to a single row; when the
+// chips overflow that row a "View more" / "View less" toggle reveals the rest
+// (mirrors the evaluator-page prompt expander). Renders nothing when there's
+// nothing to add back.
+function AddBackChips({
+  missing,
+  onAdd,
+}: {
+  missing: ExpectedParam[];
+  onAdd: (param: ExpectedParam) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [missing.length, expanded]);
+  if (missing.length === 0) return null;
+  return (
+    <div className="w-full space-y-2">
+      <div
+        ref={ref}
+        className={`flex flex-wrap items-center gap-2 ${
+          expanded ? "" : "max-h-8 overflow-hidden"
+        }`}
+      >
+        {missing.map((s) => (
+          <button
+            key={s.name}
+            type="button"
+            onClick={() => onAdd(s)}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border border-dashed border-border bg-background text-muted-foreground hover:text-foreground hover:border-foreground transition-colors cursor-pointer"
+          >
+            <span className="text-sm leading-none">+</span>
+            {s.name}
+          </button>
+        ))}
+      </div>
+      {(overflowing || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-border bg-background text-foreground hover:bg-muted transition-colors cursor-pointer"
+        >
+          {expanded ? "View less" : "View more"}
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d={
+                expanded
+                  ? "M4.5 15.75l7.5-7.5 7.5 7.5"
+                  : "M19.5 8.25l-7.5 7.5-7.5-7.5"
+              }
+            />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
 
 export type TestConfig = {
   history: Array<{
@@ -837,6 +1049,16 @@ export function AddTestDialog({
     null,
   );
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
+  // Per-tool "edit parameters as raw JSON" mode. Keyed by tool id. While in
+  // JSON mode we keep an editable text buffer and a parse-error message; valid
+  // JSON flows live into `expectedParameters` (the single source of truth).
+  const [jsonModeToolIds, setJsonModeToolIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [toolJsonText, setToolJsonText] = useState<Record<string, string>>({});
+  const [toolJsonError, setToolJsonError] = useState<
+    Record<string, string | null>
+  >({});
   // Collapsed object-parameter rows (keyed by the param's unique id). Objects
   // default to expanded; the user can fold them to tame deeply nested schemas.
   const [collapsedParamIds, setCollapsedParamIds] = useState<Set<string>>(
@@ -1376,7 +1598,7 @@ export function AddTestDialog({
       acceptAnyParameterValues: isWebhook,
       isInbuilt: false,
       allowCustomParameters: allowCustom,
-      expectedParameters: params,
+      expectedParameters: defaultSelectedParams(params),
     };
 
     setSelectedTools([...selectedTools, newTool]);
@@ -1399,6 +1621,60 @@ export function AddTestDialog({
 
   const removeTool = (toolId: string) => {
     setSelectedTools(selectedTools.filter((t) => t.id !== toolId));
+  };
+
+  // ---- Per-tool JSON editing of expected parameters ----
+  // Switch a tool's parameter editor into raw-JSON mode, seeding the buffer
+  // from the current expected `arguments`.
+  const enterToolJsonMode = (tool: SelectedToolConfig) => {
+    const args = buildArgsFromExpectedParams(tool.expectedParameters);
+    setToolJsonText((prev) => ({
+      ...prev,
+      [tool.id]: JSON.stringify(args, null, 2),
+    }));
+    setToolJsonError((prev) => ({ ...prev, [tool.id]: null }));
+    setJsonModeToolIds((prev) => new Set(prev).add(tool.id));
+  };
+
+  const exitToolJsonMode = (toolId: string) => {
+    setJsonModeToolIds((prev) => {
+      const next = new Set(prev);
+      next.delete(toolId);
+      return next;
+    });
+    setToolJsonError((prev) => ({ ...prev, [toolId]: null }));
+  };
+
+  // Live-sync raw JSON into the expected-parameter tree. Valid JSON (an object
+  // of param → value / spec) is overlaid onto the tool's schema; invalid JSON
+  // surfaces an error and leaves the last good parameters untouched.
+  const handleToolJsonChange = (tool: SelectedToolConfig, text: string) => {
+    setToolJsonText((prev) => ({ ...prev, [tool.id]: text }));
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setToolJsonError((prev) => ({
+        ...prev,
+        [tool.id]: `Invalid JSON: ${(e as Error).message}`,
+      }));
+      return;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setToolJsonError((prev) => ({
+        ...prev,
+        [tool.id]: "The top-level value must be a JSON object of parameters.",
+      }));
+      return;
+    }
+    setToolJsonError((prev) => ({ ...prev, [tool.id]: null }));
+    const schemaParams = getExpectedParamsForTool(tool.id, tool.name).params;
+    const rebuilt = overlayArgsOntoParams(schemaParams, parsed);
+    setSelectedTools((prev) =>
+      prev.map((t) =>
+        t.id === tool.id ? { ...t, expectedParameters: rebuilt } : t,
+      ),
+    );
   };
 
   // Rebuild the expected-parameter tree for a selected tool from its schema.
@@ -1425,10 +1701,9 @@ export function AddTestDialog({
           updates.acceptAnyParameterValues === false &&
           tool.acceptAnyParameterValues === true
         ) {
-          updatedTool.expectedParameters = getExpectedParamsForTool(
-            tool.id,
-            tool.name,
-          ).params;
+          updatedTool.expectedParameters = defaultSelectedParams(
+            getExpectedParamsForTool(tool.id, tool.name).params,
+          );
         }
 
         // If changing to should-call and params are empty and acceptAny is off
@@ -1438,10 +1713,9 @@ export function AddTestDialog({
           !updatedTool.acceptAnyParameterValues &&
           updatedTool.expectedParameters.length === 0
         ) {
-          updatedTool.expectedParameters = getExpectedParamsForTool(
-            tool.id,
-            tool.name,
-          ).params;
+          updatedTool.expectedParameters = defaultSelectedParams(
+            getExpectedParamsForTool(tool.id, tool.name).params,
+          );
         }
 
         return updatedTool;
@@ -1483,6 +1757,34 @@ export function AddTestDialog({
       updateExpParamAtPath(params, path, (p) => ({ ...p, name })),
     );
 
+  // Switch a leaf parameter's match mode: exact value, LLM-judge, or null.
+  // "null" is modelled as an exact match with the `isNull` flag set; switching
+  // into it clears any typed value so the disabled field doesn't show stale
+  // text.
+  const updateExpectedParamMatchMode = (
+    toolId: string,
+    path: string[],
+    mode: MatchMode,
+  ) =>
+    mutateToolParams(toolId, (params) =>
+      updateExpParamAtPath(params, path, (p) => ({
+        ...p,
+        matchType: mode === "llm_judge" ? "llm_judge" : "exact",
+        isNull: mode === "null",
+        value: mode === "null" ? "" : p.value,
+      })),
+    );
+
+  // Update an LLM-judged parameter's criteria text.
+  const updateExpectedParamCriteria = (
+    toolId: string,
+    path: string[],
+    criteria: string,
+  ) =>
+    mutateToolParams(toolId, (params) =>
+      updateExpParamAtPath(params, path, (p) => ({ ...p, criteria })),
+    );
+
   // Update a custom expected parameter's data type, re-deriving the object/
   // nested-keys flags so switching to/from `object` behaves correctly.
   const updateExpectedParamType = (
@@ -1505,6 +1807,10 @@ export function AddTestDialog({
             : p.dataType === "boolean"
               ? ""
               : p.value;
+        // Booleans and objects are always exact-matched, so drop any LLM-judge
+        // selection (and its criteria) when switching to those types.
+        const matchType =
+          isObject || dataType === "boolean" ? "exact" : p.matchType;
         return {
           ...p,
           dataType,
@@ -1512,6 +1818,10 @@ export function AddTestDialog({
           allowCustomKeys: isObject,
           properties: isObject ? p.properties || [] : undefined,
           value,
+          matchType,
+          criteria: matchType === "exact" ? "" : p.criteria,
+          // Objects are containers and can't carry a null assertion.
+          isNull: isObject ? false : p.isNull,
         };
       }),
     );
@@ -1559,7 +1869,7 @@ export function AddTestDialog({
         value={dataType}
         onChange={(e) => updateExpectedParamType(toolId, path, e.target.value)}
         aria-label="Parameter type"
-        className="h-9 pl-3 pr-8 rounded-lg text-sm bg-background text-foreground border border-border focus:outline-none focus:ring-2 focus:ring-accent cursor-pointer appearance-none capitalize"
+        className="h-7 pl-2.5 pr-6 rounded-lg text-xs bg-background text-foreground border border-border focus:outline-none focus:ring-2 focus:ring-accent cursor-pointer appearance-none capitalize"
       >
         {EXPECTED_PARAM_TYPES.map((t) => (
           <option key={t} value={t} className="capitalize">
@@ -1567,9 +1877,53 @@ export function AddTestDialog({
           </option>
         ))}
       </select>
+      <div className="absolute inset-y-0 right-0 flex items-center pr-1.5 pointer-events-none">
+        <svg
+          className="w-3 h-3 text-muted-foreground"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+          />
+        </svg>
+      </div>
+    </div>
+  );
+
+  // Match-mode picker shown beside each leaf parameter's value: "Is exactly"
+  // compares the literal value, "satisfies the criteria" judges the actual
+  // value against an LLM (non-boolean only), and "Is null" asserts the value is
+  // null. Styled in the inverted (foreground) palette to set it apart from the
+  // value / criteria field beside it.
+  const renderMatchTypeSelect = (
+    toolId: string,
+    path: string[],
+    mode: MatchMode,
+    allowLlm: boolean,
+  ) => (
+    <div className="relative flex-shrink-0">
+      <select
+        value={mode}
+        onChange={(e) =>
+          updateExpectedParamMatchMode(toolId, path, e.target.value as MatchMode)
+        }
+        aria-label="Match mode"
+        className="h-10 pl-3 pr-8 rounded-lg text-sm font-medium bg-foreground text-background border border-transparent hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent cursor-pointer appearance-none transition-opacity"
+      >
+        <option value="exact">Is exactly</option>
+        {allowLlm && (
+          <option value="llm_judge">satisfies the criteria</option>
+        )}
+        <option value="null">Is null</option>
+      </select>
       <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
         <svg
-          className="w-4 h-4 text-muted-foreground"
+          className="w-4 h-4 text-background"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -1608,6 +1962,25 @@ export function AddTestDialog({
     </button>
   );
 
+  // Full-width name input for a custom (user-added) parameter row. `hasError`
+  // applies the red outline when the row is named-but-incomplete.
+  const renderParamNameInput = (
+    toolId: string,
+    path: string[],
+    name: string,
+    hasError: boolean,
+  ) => (
+    <input
+      type="text"
+      value={name}
+      onChange={(e) => updateExpectedParamName(toolId, path, e.target.value)}
+      placeholder="Parameter name"
+      className={`w-full h-9 px-3 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent ${
+        hasError ? "border-red-500" : "border-border"
+      }`}
+    />
+  );
+
   // Render "+ name" chips for schema-declared optional parameters that the user
   // removed at this level, letting them add the parameter (and its subtree)
   // back. `schemaLevelParams` is the full set declared at this level; anything
@@ -1621,25 +1994,15 @@ export function AddTestDialog({
   ): React.ReactNode => {
     const currentNames = new Set(currentParams.map((p) => p.name));
     const missing = schemaLevelParams.filter((s) => !currentNames.has(s.name));
-    if (missing.length === 0) return null;
     return (
-      <div className="flex flex-wrap items-center gap-2">
-        {missing.map((s) => (
-          <button
-            key={s.name}
-            type="button"
-            onClick={() =>
-              mutateToolParams(toolId, (params) =>
-                addExpParamAtPath(params, parentPath, cloneExpParamFresh(s)),
-              )
-            }
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border border-dashed border-border bg-background text-muted-foreground hover:text-foreground hover:border-foreground transition-colors cursor-pointer"
-          >
-            <span className="text-sm leading-none">+</span>
-            {s.name}
-          </button>
-        ))}
-      </div>
+      <AddBackChips
+        missing={missing}
+        onAdd={(s) =>
+          mutateToolParams(toolId, (params) =>
+            addExpParamAtPath(params, parentPath, cloneExpParamFresh(s)),
+          )
+        }
+      />
     );
   };
 
@@ -1659,35 +2022,40 @@ export function AddTestDialog({
       const showErrors =
         localValidationAttempted && activeTab === "tool-invocation";
 
-      // Header: name (label, or editable input for custom rows) + badge +
-      // remove button for optional / custom rows.
+      // The "filled in" field for a leaf depends on its match strategy: the
+      // judging criteria for an LLM judge, the expected value otherwise. A null
+      // assertion always counts as filled.
+      const leafFilled =
+        param.matchType === "llm_judge"
+          ? !!param.criteria.trim()
+          : param.isNull || !!param.value.trim();
+
+      // Header: a label for declared params, or — for custom (user-added) rows —
+      // a type-picker / badge / remove row with the name input on its own line
+      // below. The match-type picker lives on the value row.
       const nameError =
-        showErrors &&
-        param.custom &&
-        !!param.value.trim() &&
-        !param.name.trim();
-      const header = (
+        showErrors && param.custom && leafFilled && !param.name.trim();
+      const nameInput = renderParamNameInput(
+        toolId,
+        paramPath,
+        param.name,
+        nameError,
+      );
+      const header = param.custom ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            {renderParamTypeSelect(toolId, paramPath, param.dataType)}
+            <div className="flex-1" />
+            {renderRequiredBadge(param.required)}
+            {!param.required && renderRemoveParamButton(toolId, paramPath)}
+          </div>
+          {nameInput}
+        </div>
+      ) : (
         <div className="flex items-center gap-2">
-          {param.custom ? (
-            <>
-              {renderParamTypeSelect(toolId, paramPath, param.dataType)}
-              <input
-                type="text"
-                value={param.name}
-                onChange={(e) =>
-                  updateExpectedParamName(toolId, paramPath, e.target.value)
-                }
-                placeholder="Parameter name"
-                className={`flex-1 min-w-0 h-9 px-3 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent ${
-                  nameError ? "border-red-500" : "border-border"
-                }`}
-              />
-            </>
-          ) : (
-            <span className="flex-1 text-sm font-medium text-foreground">
-              {param.name}
-            </span>
-          )}
+          <span className="flex-1 text-sm font-medium text-foreground">
+            {param.name}
+          </span>
           {renderRequiredBadge(param.required)}
           {!param.required && renderRemoveParamButton(toolId, paramPath)}
         </div>
@@ -1741,29 +2109,28 @@ export function AddTestDialog({
             key={param.id}
             className="bg-background border border-border rounded-xl p-4 space-y-2"
           >
-            <div className="flex items-center gap-2">
-              {param.custom ? (
-                <>
+            {param.custom ? (
+              // Custom object row: controls on top, name input on its own line.
+              <>
+                <div className="flex items-center gap-2">
                   {renderParamTypeSelect(toolId, paramPath, param.dataType)}
-                  <input
-                    type="text"
-                    value={param.name}
-                    onChange={(e) =>
-                      updateExpectedParamName(toolId, paramPath, e.target.value)
-                    }
-                    placeholder="Parameter name"
-                    className="flex-1 min-w-0 h-9 px-3 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border border-border focus:outline-none focus:ring-2 focus:ring-accent"
-                  />
-                </>
-              ) : (
+                  <div className="flex-1" />
+                  {collapseToggle}
+                  {renderRequiredBadge(param.required)}
+                  {!param.required && renderRemoveParamButton(toolId, paramPath)}
+                </div>
+                {renderParamNameInput(toolId, paramPath, param.name, nameError)}
+              </>
+            ) : (
+              <div className="flex items-center gap-2">
                 <span className="flex-1 text-sm font-medium text-foreground">
                   {param.name}
                 </span>
-              )}
-              {collapseToggle}
-              {renderRequiredBadge(param.required)}
-              {!param.required && renderRemoveParamButton(toolId, paramPath)}
-            </div>
+                {collapseToggle}
+                {renderRequiredBadge(param.required)}
+                {!param.required && renderRemoveParamButton(toolId, paramPath)}
+              </div>
+            )}
             {collapsed ? (
               <p className="text-xs text-muted-foreground">
                 {childCount > 0
@@ -1807,19 +2174,27 @@ export function AddTestDialog({
         );
       }
 
-      // A value is "missing" when it's empty but required (or a kept named row);
-      // it's "malformed" when present but wrong for its type (e.g. non-numeric).
-      // A boolean is "unset" when it holds neither true nor false.
-      const typeError = expectedValueTypeError(param.value, param.dataType);
+      // For LLM-judged rows the criteria box replaces the value box. The field
+      // is "missing" when empty but required (or a kept named row); a value is
+      // "malformed" when present but wrong for its type (e.g. non-numeric); a
+      // boolean is "unset" when it holds neither true nor false.
+      const isLlm = param.matchType === "llm_judge";
+      const isNull = !isLlm && !!param.isNull;
+      const mode: MatchMode = isLlm ? "llm_judge" : isNull ? "null" : "exact";
+      const typeError =
+        !isLlm &&
+        !isNull &&
+        expectedValueTypeError(param.value, param.dataType);
       const booleanUnset =
+        !isNull &&
         param.dataType === "boolean" &&
         param.value !== "true" &&
         param.value !== "false";
       const missingValue =
-        !param.value.trim() &&
+        !leafFilled &&
         (param.required || (!param.custom ? true : !!param.name.trim()));
       const valueError = showErrors && (missingValue || typeError || booleanUnset);
-      const fieldClass = `w-full h-10 px-4 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent ${
+      const fieldClass = `w-full h-10 px-4 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed ${
         valueError ? "border-red-500" : "border-border"
       }`;
       return (
@@ -1829,53 +2204,99 @@ export function AddTestDialog({
         >
           {header}
           {param.dataType === "boolean" ? (
-            // Booleans can only be true or false — offer a fixed dropdown.
-            <div className="relative">
-              <select
-                value={booleanUnset ? "" : param.value}
-                onChange={(e) =>
-                  updateExpectedParamValue(toolId, paramPath, e.target.value)
-                }
-                className={`${fieldClass} pr-10 cursor-pointer appearance-none`}
-              >
-                {/* Hidden placeholder so an unset boolean renders blank without
-                  adding a selectable "Select…" entry to the list. */}
-                <option value="" disabled hidden></option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-              <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                <svg
-                  className="w-4 h-4 text-muted-foreground"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M19.5 8.25l-7.5 7.5-7.5-7.5"
-                  />
-                </svg>
-              </div>
+            // Booleans match exactly (yes/no) or assert null — no LLM judging.
+            <div className="flex items-center gap-2">
+              {renderMatchTypeSelect(toolId, paramPath, mode, false)}
+              {isNull ? (
+                <input
+                  type="text"
+                  value="null"
+                  disabled
+                  readOnly
+                  className={`${fieldClass} flex-1 min-w-0`}
+                />
+              ) : (
+                <div className="relative flex-1 min-w-0">
+                  <select
+                    value={booleanUnset ? "" : param.value}
+                    onChange={(e) =>
+                      updateExpectedParamValue(toolId, paramPath, e.target.value)
+                    }
+                    className={`${fieldClass} pr-10 cursor-pointer appearance-none`}
+                  >
+                    {/* Hidden placeholder so an unset boolean renders blank
+                      without adding a selectable "Select…" entry to the list. */}
+                    <option value="" disabled hidden></option>
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                  <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                    <svg
+                      className="w-4 h-4 text-muted-foreground"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                      />
+                    </svg>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
-            <input
-              type="text"
-              value={param.value}
-              onChange={(e) =>
-                updateExpectedParamValue(toolId, paramPath, e.target.value)
-              }
-              placeholder={
-                param.dataType === "array"
-                  ? 'Expected value, e.g. ["a", "b"]'
-                  : param.dataType === "integer" || param.dataType === "number"
-                    ? "Expected number"
-                    : "Expected value"
-              }
-              className={fieldClass}
-            />
+            // Match-mode picker sits inline with the expected value / criteria.
+            <div className="flex items-start gap-2">
+              {renderMatchTypeSelect(toolId, paramPath, mode, true)}
+              {isLlm ? (
+                // LLM judge — describe what a correct value looks like.
+                <input
+                  type="text"
+                  value={param.criteria}
+                  onChange={(e) =>
+                    updateExpectedParamCriteria(
+                      toolId,
+                      paramPath,
+                      e.target.value,
+                    )
+                  }
+                  placeholder="e.g. A friendly reminder with the date"
+                  className={`${fieldClass} flex-1 min-w-0`}
+                />
+              ) : isNull ? (
+                <input
+                  type="text"
+                  value="null"
+                  disabled
+                  readOnly
+                  className={`${fieldClass} flex-1 min-w-0`}
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={param.value}
+                  onChange={(e) =>
+                    updateExpectedParamValue(toolId, paramPath, e.target.value)
+                  }
+                  placeholder={
+                    param.dataType === "array"
+                      ? 'Expected value, e.g. ["a", "b"]'
+                      : param.dataType === "integer" ||
+                          param.dataType === "number"
+                        ? "Expected number"
+                        : "Expected value"
+                  }
+                  className={`${fieldClass} flex-1 min-w-0`}
+                />
+              )}
+            </div>
+          )}
+          {showErrors && isLlm && missingValue && (
+            <p className="text-xs text-red-500">Enter judging criteria.</p>
           )}
           {showErrors && booleanUnset && (
             <p className="text-xs text-red-500">Select true or false.</p>
@@ -2876,44 +3297,107 @@ export function AddTestDialog({
                                   tool.allowCustomParameters ||
                                   toolSchemaParams.length > 0) && (
                                   <div className="mt-4">
-                                    <div className="mb-3">
-                                      <p className="text-xs text-muted-foreground mt-1">
+                                    <div className="mb-3 flex items-end justify-between gap-2">
+                                      <p className="text-xs text-muted-foreground">
                                         {tool.allowCustomParameters &&
                                         tool.expectedParameters.length === 0
                                           ? "Add the parameter names you expect the agent to extract and their expected values"
                                           : "Configure how each parameter for the tool call should be evaluated"}
                                       </p>
-                                    </div>
-
-                                    {tool.expectedParameters.length > 0 && (
-                                      <div className="space-y-3">
-                                        {renderExpectedParams(
-                                          tool.id,
-                                          tool.expectedParameters,
-                                          [],
-                                          toolSchemaParams,
-                                        )}
-                                      </div>
-                                    )}
-
-                                    <div className="mt-3 flex flex-wrap items-center gap-3">
-                                      {tool.allowCustomParameters && (
+                                      {/* Form ⇆ JSON toggle for this tool's
+                                          expected parameters. */}
+                                      <div className="inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg bg-background border border-border p-0.5">
                                         <button
+                                          type="button"
                                           onClick={() =>
-                                            addCustomExpectedParam(tool.id, [])
+                                            exitToolJsonMode(tool.id)
                                           }
-                                          className="h-9 px-4 rounded-lg text-sm font-medium bg-background text-foreground border border-border hover:bg-muted transition-colors cursor-pointer"
+                                          className={`h-7 px-3 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                                            jsonModeToolIds.has(tool.id)
+                                              ? "text-muted-foreground hover:text-foreground"
+                                              : "bg-foreground text-background"
+                                          }`}
                                         >
-                                          + Add parameter
+                                          Form
                                         </button>
-                                      )}
-                                      {renderAddBackChips(
-                                        tool.id,
-                                        [],
-                                        toolSchemaParams,
-                                        tool.expectedParameters,
-                                      )}
+                                        <button
+                                          type="button"
+                                          onClick={() => enterToolJsonMode(tool)}
+                                          className={`h-7 px-3 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                                            jsonModeToolIds.has(tool.id)
+                                              ? "bg-foreground text-background"
+                                              : "text-muted-foreground hover:text-foreground"
+                                          }`}
+                                        >
+                                          JSON
+                                        </button>
+                                      </div>
                                     </div>
+
+                                    {jsonModeToolIds.has(tool.id) ? (
+                                      <div className="space-y-2">
+                                        {toolJsonError[tool.id] && (
+                                          <div className="rounded-md border border-red-500 bg-red-500/10 px-4 py-3">
+                                            <p className="text-sm text-red-500 whitespace-pre-line">
+                                              {toolJsonError[tool.id]}
+                                            </p>
+                                          </div>
+                                        )}
+                                        <textarea
+                                          value={toolJsonText[tool.id] ?? ""}
+                                          onChange={(e) =>
+                                            handleToolJsonChange(
+                                              tool,
+                                              e.target.value,
+                                            )
+                                          }
+                                          spellCheck={false}
+                                          placeholder={
+                                            '{\n  "param": { "match_type": "exact", "value": "..." }\n}'
+                                          }
+                                          className={`w-full min-h-[240px] px-4 py-3 rounded-lg text-sm font-mono bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent resize-y ${
+                                            toolJsonError[tool.id]
+                                              ? "border-red-500"
+                                              : "border-border"
+                                          }`}
+                                        />
+                                      </div>
+                                    ) : (
+                                      <>
+                                        {tool.expectedParameters.length > 0 && (
+                                          <div className="space-y-3">
+                                            {renderExpectedParams(
+                                              tool.id,
+                                              tool.expectedParameters,
+                                              [],
+                                              toolSchemaParams,
+                                            )}
+                                          </div>
+                                        )}
+
+                                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                                          {tool.allowCustomParameters && (
+                                            <button
+                                              onClick={() =>
+                                                addCustomExpectedParam(
+                                                  tool.id,
+                                                  [],
+                                                )
+                                              }
+                                              className="h-9 px-4 rounded-lg text-sm font-medium bg-background text-foreground border border-border hover:bg-muted transition-colors cursor-pointer"
+                                            >
+                                              + Add parameter
+                                            </button>
+                                          )}
+                                          {renderAddBackChips(
+                                            tool.id,
+                                            [],
+                                            toolSchemaParams,
+                                            tool.expectedParameters,
+                                          )}
+                                        </div>
+                                      </>
+                                    )}
                                   </div>
                                 )}
                             </div>
