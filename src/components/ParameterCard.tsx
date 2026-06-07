@@ -1,4 +1,5 @@
 import { NestedContainer } from "@/components/ui/NestedContainer";
+import { FieldError } from "@/components/ui/FieldError";
 
 export type Parameter = {
   id: string;
@@ -23,6 +24,7 @@ type ParameterCardProps = {
   siblingNames?: string[]; // Names of sibling parameters (excluding this one)
   hideDelete?: boolean; // Hide delete button (e.g., when only one parameter exists)
   showRequired?: boolean; // Show required checkbox (default: true)
+  requireDescription?: boolean; // Whether the description is mandatory (default: true)
 };
 
 // Recursive component for rendering parameter/property cards
@@ -40,6 +42,7 @@ export const ParameterCard = ({
   siblingNames = [],
   hideDelete = false,
   showRequired = true,
+  requireDescription = true,
 }: ParameterCardProps) => {
   const currentPath = [...path, param.id];
   const parentPath = path;
@@ -111,11 +114,18 @@ export const ParameterCard = ({
                   : "border-border"
               }`}
             />
-            {validationAttempted && isDuplicateName && (
-              <p className="text-sm text-red-500 mt-1">
-                A parameter with this name already exists
-              </p>
-            )}
+            <FieldError show={validationAttempted && !param.name.trim()}>
+              Name cannot be empty
+            </FieldError>
+            <FieldError
+              show={
+                validationAttempted &&
+                param.name.trim() !== "" &&
+                isDuplicateName
+              }
+            >
+              A parameter with this name already exists
+            </FieldError>
           </div>
         )}
       </div>
@@ -154,7 +164,8 @@ export const ParameterCard = ({
       {/* Description */}
       <div>
         <label className="block text-sm font-medium mb-2">
-          Description <span className="text-red-500">*</span>
+          Description{" "}
+          {requireDescription && <span className="text-red-500">*</span>}
         </label>
         <textarea
           value={param.description}
@@ -168,11 +179,18 @@ export const ParameterCard = ({
           rows={3}
           placeholder="This field will be passed to the LLM and should describe in detail what the parameter is for and how it should be populated"
           className={`w-full px-4 py-3 rounded-md text-base border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none ${
-            validationAttempted && !param.description.trim()
+            validationAttempted && requireDescription && !param.description.trim()
               ? "border-red-500"
               : "border-border"
           }`}
         />
+        <FieldError
+          show={
+            validationAttempted && requireDescription && !param.description.trim()
+          }
+        >
+          Description cannot be empty
+        </FieldError>
       </div>
 
       {/* Properties section for object type */}
@@ -210,11 +228,20 @@ export const ParameterCard = ({
                         .map((p) => p.name) ?? []
                     }
                     showRequired={showRequired}
+                    requireDescription={requireDescription}
                   />
                 ))}
               </div>
             )}
           </NestedContainer>
+          <FieldError
+            show={
+              validationAttempted &&
+              (!param.properties || param.properties.length === 0)
+            }
+          >
+            Add at least one property
+          </FieldError>
         </div>
       )}
 
@@ -245,6 +272,7 @@ export const ParameterCard = ({
               validationAttempted={validationAttempted}
               isArrayItem={true}
               showRequired={showRequired}
+              requireDescription={requireDescription}
             />
           </NestedContainer>
         </div>
