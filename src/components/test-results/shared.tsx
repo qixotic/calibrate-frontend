@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   EvaluatorVerdictCard,
   ReasoningExpandedContent,
@@ -517,7 +517,7 @@ export function ToolCallCard({
       {hasOutput && (
         <div className="mt-3 pt-3 border-t border-border">
           <label className="block text-sm font-medium text-foreground mb-1.5">
-            Output
+            Tool Response
           </label>
           <div
             className={`px-3 py-2 rounded-lg text-sm bg-background border border-border text-foreground whitespace-pre-wrap break-all ${
@@ -726,6 +726,23 @@ export function TestDetailView({
    * message annotators are scoring. */
   highlightEvalTarget?: boolean;
 }) {
+  // Precompute tool_call_id → response content map so the inline tool-call
+  // card lookup is O(1) instead of scanning the entire history once per
+  // tool_call render. Built once per render via useMemo.
+  const toolResponseByCallId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const h of history) {
+      if (
+        h.role === "tool" &&
+        typeof h.tool_call_id === "string" &&
+        typeof h.content === "string"
+      ) {
+        m.set(h.tool_call_id, h.content);
+      }
+    }
+    return m;
+  }, [history]);
+
   const evalTargetIndex = highlightEvalTarget
     ? (() => {
         for (let i = history.length - 1; i >= 0; i--) {
@@ -764,6 +781,10 @@ export function TestDetailView({
             {history.map((message, index) => {
               const isEvalTarget = index === evalTargetIndex;
               const timestamp = formatTurnTimestamp(message.created_at);
+              // Tool-response entries are surfaced inline on their parent
+              // tool_call card via the `output` prop — skip them here so
+              // they don't render as empty rows.
+              if (message.role === "tool") return null;
               return (
               <div
                 key={index}
@@ -819,7 +840,11 @@ export function TestDetailView({
                   </>
                 )}
 
-                {/* Agent Tool Call from history */}
+                {/* Agent Tool Call from history. The tool's response (if
+                   present as a later `role: "tool"` entry with a matching
+                   `tool_call_id`) is attached as the card's `output` so the
+                   reviewer can see what the tool returned alongside the
+                   call. */}
                 {message.role === "assistant" &&
                   message.tool_calls &&
                   message.tool_calls.length > 0 && (
@@ -838,11 +863,15 @@ export function TestDetailView({
                         {message.tool_calls.map((toolCall, tcIndex) => {
                           const { toolName, args } =
                             normalizeToolCall(toolCall);
+                          const toolResponse = toolResponseByCallId.get(
+                            toolCall.id,
+                          );
                           return (
                             <ToolCallCard
                               key={tcIndex}
                               toolName={toolName}
                               args={args}
+                              output={toolResponse}
                             />
                           );
                         })}

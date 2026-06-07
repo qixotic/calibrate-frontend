@@ -553,6 +553,15 @@ function AddBackChips({
   );
 }
 
+// Default tool-response payloads shown in the Tool Response box. Webhook
+// tools require a body, so the default mimics a successful HTTP response;
+// structured-output tools default to a minimal acknowledgement. Hoisted to
+// constants so the value is identical across the load-synthesis path, the
+// "add tool call" path, and the textarea placeholder.
+const DEFAULT_WEBHOOK_RESPONSE = '{\n  "status": "success",\n  "response": {}\n}';
+const DEFAULT_STRUCTURED_RESPONSE = '{\n  "status": "received"\n}';
+const RESPONSE_PLACEHOLDER = `// any valid JSON value\n${DEFAULT_WEBHOOK_RESPONSE}`;
+
 export type TestConfig = {
   history: Array<{
     role: "assistant" | "user" | "tool";
@@ -941,13 +950,46 @@ export function AddTestDialog({
               content: historyItem.content,
               linkedToolCallId,
               toolName: linkedToolCall?.toolName || "",
+              isWebhook: linkedToolCall?.isWebhook,
               ...(createdAt ? { createdAt } : {}),
             });
           }
         });
 
-        if (messages.length > 0) {
-          setChatMessages(messages);
+        // Ensure every tool_call has a paired tool_response immediately after
+        // it. Webhook tools already get one from backend history; structured-
+        // output tools usually don't, so synthesise an empty response box.
+        const withResponses: typeof messages = [];
+        messages.forEach((msg, idx) => {
+          withResponses.push(msg);
+          if (msg.role === "tool_call") {
+            const next = messages[idx + 1];
+            const alreadyHasResponse =
+              next?.role === "tool_response" &&
+              (next.linkedToolCallId === msg.toolId ||
+                next.linkedToolCallId === msg.id);
+            if (!alreadyHasResponse) {
+              // Webhook tools get the standard success body; structured-
+              // output tools default to a minimal `{"status": "received"}`
+              // placeholder so existing tests show a sensible response
+              // instead of an empty box.
+              const defaultContent = msg.isWebhook
+                ? DEFAULT_WEBHOOK_RESPONSE
+                : DEFAULT_STRUCTURED_RESPONSE;
+              withResponses.push({
+                id: `tool-response-synth-${msg.id}`,
+                role: "tool_response",
+                content: defaultContent,
+                linkedToolCallId: msg.toolId || msg.id,
+                toolName: msg.toolName || "",
+                isWebhook: msg.isWebhook,
+              });
+            }
+          }
+        });
+
+        if (withResponses.length > 0) {
+          setChatMessages(withResponses);
         }
       }
 
@@ -1139,16 +1181,17 @@ export function AddTestDialog({
       },
     ];
 
-    // If it's a webhook tool, automatically add a tool response message after it
-    if (isWebhook) {
-      newMessages.push({
-        id: (Date.now() + 1).toString(),
-        role: "tool_response",
-        content: '{\n  "status": "success",\n  "response": {}\n}',
-        linkedToolCallId: toolCallId,
-        toolName,
-      });
-    }
+    // Always add a tool response message after the tool call.
+    // Webhook tools get a pre-filled JSON body (required); structured-output
+    // tools get an empty box that the user can optionally fill.
+    newMessages.push({
+      id: (Date.now() + 1).toString(),
+      role: "tool_response",
+      content: isWebhook ? DEFAULT_WEBHOOK_RESPONSE : "",
+      linkedToolCallId: toolCallId,
+      toolName,
+      isWebhook,
+    });
 
     setChatMessages(newMessages);
     setToolCallDropdownOpen(false);
@@ -1187,8 +1230,9 @@ export function AddTestDialog({
   const removeChatMessage = (id: string) => {
     const messageToRemove = chatMessages.find((msg) => msg.id === id);
 
-    // If removing a tool_call that's a webhook, also remove its linked tool_response
-    if (messageToRemove?.role === "tool_call" && messageToRemove?.isWebhook) {
+    // If removing a tool_call, also remove its linked tool_response (every
+    // tool_call has one now — empty for structured-output, JSON for webhook).
+    if (messageToRemove?.role === "tool_call") {
       setChatMessages(
         chatMessages.filter(
           (msg) => msg.id !== id && msg.linkedToolCallId !== id,
@@ -2379,23 +2423,23 @@ export function AddTestDialog({
           ...ts,
         });
 
-        // For webhook tools, find the linked tool_response message and add it to history
-        // For non-webhook tools, don't add any tool response
-        if (message.isWebhook) {
-          const linkedResponse = chatMessages.find(
-            (m) =>
-              m.role === "tool_response" && m.linkedToolCallId === message.id,
-          );
-          if (linkedResponse && linkedResponse.content) {
-            history.push({
-              role: "tool",
-              content: linkedResponse.content,
-              tool_call_id: toolCallId,
-              ...(linkedResponse.createdAt
-                ? { created_at: linkedResponse.createdAt }
-                : {}),
-            });
-          }
+        // Find the linked tool_response message and add it to history if it
+        // has content. Webhook tools always have a body; structured-output
+        // tools may leave the box empty, in which case we skip emitting a
+        // tool message.
+        const linkedResponse = chatMessages.find(
+          (m) =>
+            m.role === "tool_response" && m.linkedToolCallId === message.id,
+        );
+        if (linkedResponse && linkedResponse.content.trim()) {
+          history.push({
+            role: "tool",
+            content: linkedResponse.content,
+            tool_call_id: toolCallId,
+            ...(linkedResponse.createdAt
+              ? { created_at: linkedResponse.createdAt }
+              : {}),
+          });
         }
       }
       // Skip tool_response messages as they're handled with their linked tool_call
@@ -2515,6 +2559,15 @@ export function AddTestDialog({
       return;
     }
 
+    // Webhook tool responses are required — the asterisk on the label means
+    // it. Structured-output responses are optional and may stay blank.
+    const hasEmptyWebhookResponse = chatMessages.some(
+      (m) => m.role === "tool_response" && m.isWebhook && !m.content.trim(),
+    );
+    if (hasEmptyWebhookResponse) {
+      return;
+    }
+
     // Validate required fields based on test type
     if (isEvaluatorTab) {
       if (!testName.trim()) {
@@ -2528,17 +2581,9 @@ export function AddTestDialog({
       if (hasUnfilledEvaluatorVariables()) {
         return;
       }
-      // Validate that all tool_response messages have valid JSON
-      const toolResponses = chatMessages.filter(
-        (m) => m.role === "tool_response",
-      );
-      for (const response of toolResponses) {
-        try {
-          JSON.parse(response.content);
-        } catch {
-          return; // Don't submit if any tool response has invalid JSON
-        }
-      }
+      // Tool response content is sent as a plain string to the backend's
+      // `content` field — any text (JSON object, JSON array, or raw string)
+      // is acceptable, so no validation is needed here.
     } else {
       // tool-invocation - name and at least one tool are required
       if (!testName.trim() || selectedTools.length === 0) {
@@ -2557,17 +2602,6 @@ export function AddTestDialog({
             "Please complete every highlighted parameter — booleans need true or false, and numbers must be valid.",
           );
           return;
-        }
-      }
-      // Validate that all tool_response messages have valid JSON
-      const toolResponses = chatMessages.filter(
-        (m) => m.role === "tool_response",
-      );
-      for (const response of toolResponses) {
-        try {
-          JSON.parse(response.content);
-        } catch {
-          return; // Don't submit if any tool response has invalid JSON
         }
       }
     }
@@ -4038,7 +4072,10 @@ export function AddTestDialog({
                           </div>
                         )}
 
-                        {/* Tool Response Display (for webhook tools) */}
+                        {/* Tool Response Display. Shown for every tool_call —
+                           webhook tools default to a pre-filled JSON body and
+                           require it; structured-output tools render an empty
+                           optional box. */}
                         {message.role === "tool_response" && (
                           <div className="w-1/2">
                             <div className="bg-muted border border-border rounded-2xl p-4">
@@ -4059,15 +4096,17 @@ export function AddTestDialog({
                                 <span className="text-sm font-medium text-foreground">
                                   Tool Response
                                 </span>
-                                <span className="text-xs text-muted-foreground">
-                                  ({message.toolName})
-                                </span>
+                                {message.isWebhook ? (
+                                  <span className="text-red-500 text-xs">
+                                    *
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground/70">
+                                    (optional)
+                                  </span>
+                                )}
                               </div>
                               <div className="mt-2">
-                                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                                  JSON Response{" "}
-                                  <span className="text-red-500">*</span>
-                                </label>
                                 <textarea
                                   value={message.content}
                                   onChange={(e) =>
@@ -4076,31 +4115,16 @@ export function AddTestDialog({
                                       e.target.value,
                                     )
                                   }
-                                  placeholder='{"status": "success", "response": {}}'
+                                  placeholder={RESPONSE_PLACEHOLDER}
                                   rows={5}
-                                  className={`w-full px-3 py-2 rounded-lg text-sm font-mono bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent ${(() => {
-                                    try {
-                                      JSON.parse(message.content);
-                                      return "border-border";
-                                    } catch {
-                                      return message.content.trim()
-                                        ? "border-red-500"
-                                        : "border-border";
-                                    }
-                                  })()}`}
+                                  className={`w-full px-3 py-2 rounded-lg text-sm font-mono bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent ${
+                                    message.isWebhook &&
+                                    localValidationAttempted &&
+                                    !message.content.trim()
+                                      ? "border-red-500"
+                                      : "border-border"
+                                  }`}
                                 />
-                                {(() => {
-                                  try {
-                                    JSON.parse(message.content);
-                                    return null;
-                                  } catch {
-                                    return message.content.trim() ? (
-                                      <p className="text-xs text-red-500 mt-1">
-                                        Invalid JSON format
-                                      </p>
-                                    ) : null;
-                                  }
-                                })()}
                               </div>
                             </div>
                           </div>
