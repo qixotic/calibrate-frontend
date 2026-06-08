@@ -129,32 +129,65 @@ function buildResponseSampleCsv(selected: LLMEvaluatorOption[]): string {
 }
 
 const SAMPLE_TOOL_CALL_CSV = `name,conversation_history,tool_calls
-"Book room test","[{""role"":""user"",""content"":""I want to book room 101 for tomorrow""}]","[{""tool"":""book_room"",""arguments"":{""room"":""101""},""accept_any_arguments"":false}]"
-"Weather lookup","[{""role"":""assistant"",""content"":""How can I help?""},{""role"":""user"",""content"":""What is the weather in Bangalore?""}]","[{""tool"":""get_weather"",""arguments"":{},""accept_any_arguments"":true}]"`;
+"Book room test","[{""role"":""user"",""content"":""I want to book room 101 for tomorrow""}]","[{""tool"":""book_room"",""arguments"":{""room"":{""match_type"":""exact"",""value"":""101""}},""accept_any_arguments"":false}]"
+"Weather lookup","[{""role"":""assistant"",""content"":""How can I help?""},{""role"":""user"",""content"":""What is the weather in Bangalore?""}]","[{""tool"":""get_weather"",""arguments"":{},""accept_any_arguments"":true}]"
+"LLM-judged summary","[{""role"":""user"",""content"":""Log a note that the customer was upset about the delayed delivery""}]","[{""tool"":""log_note"",""arguments"":{""note"":{""match_type"":""llm_judge"",""criteria"":""The note should mention that the customer was upset about a delivery delay.""}}}]"
+"Nested address arguments","[{""role"":""user"",""content"":""Ship to 221B Baker Street, London, no second line""}]","[{""tool"":""create_shipment"",""arguments"":{""address"":{""line1"":{""match_type"":""exact"",""value"":""221B Baker Street""},""line2"":{""match_type"":""exact"",""value"":null},""city"":{""match_type"":""exact"",""value"":""London""}}}}]"
+"End the call","[{""role"":""assistant"",""content"":""Anything else?""},{""role"":""user"",""content"":""No that's all, thanks""}]","[{""tool"":""end_call"",""arguments"":{},""accept_any_arguments"":true}]"`;
 
 const CONVERSATION_HISTORY_DESC =
   'A JSON array of chat messages that represents the conversation that has happened so far, before the agent\'s response is evaluated. Each message is an object with a "role" and "content" field.\n\nrole — either "user" or "assistant"\ncontent — the message said by that role';
+
+// Per-leaf matcher shapes available inside a tool-call `arguments` object.
+// These mirror the per-parameter match modes available in the single-test
+// "Add tool call test" UI. Rendered as sub-fields under the `arguments` field
+// in the guidelines PDF.
+const TOOL_CALL_ARG_MATCH_FIELDS: GuidelineField[] = [
+  {
+    name: "Exact match",
+    meta: '{ "match_type": "exact", "value": ... }',
+    description:
+      "The actual argument value sent by the agent must deep-equal value. value can be any JSON value, including null to assert the parameter is explicitly null.",
+    example:
+      '"room":  { "match_type": "exact", "value": "101" }\n"count": { "match_type": "exact", "value": 3 }\n"line2": { "match_type": "exact", "value": null }',
+  },
+  {
+    name: "LLM-judged match",
+    meta: '{ "match_type": "llm_judge", "criteria": "..." }',
+    description:
+      "Hands the actual argument value to an LLM together with your criteria string and lets the LLM decide whether the value satisfies the criteria. Use this for semantic or natural-language parameters where an exact-string compare is too strict (notes, summaries, reasoning text). criteria is required and should describe what a passing value looks like.",
+    example:
+      '"note": {\n  "match_type": "llm_judge",\n  "criteria": "The note should mention that the customer was upset about a delivery delay."\n}',
+  },
+  {
+    name: "Nested object",
+    description:
+      "For object-typed parameters, pass a nested JSON object. Each leaf inside the nested object is itself a matcher (exact or llm_judge) and nesting can go to any depth, mirroring the parameter schema configured on the tool.",
+    example:
+      '"address": {\n  "line1": { "match_type": "exact",     "value": "221B Baker Street" },\n  "line2": { "match_type": "exact",     "value": null },\n  "city":  { "match_type": "exact",     "value": "London" },\n  "notes": { "match_type": "llm_judge", "criteria": "Mentions a signature is required on delivery." }\n}',
+  },
+];
 
 const TOOL_CALL_FIELDS: GuidelineField[] = [
   {
     name: "tool",
     meta: "(required, string)",
     description:
-      "The name of the tool. Must match the tool name exactly as configured in your agent.",
-    example: '"book_room"',
+      'The identifier of the tool the agent is expected to call. For custom tools, use the tool name exactly as configured under your Tools tab. For Calibrate inbuilt tools, use the inbuilt tool id (currently end_call for the End-conversation tool). The tool must exist on your workspace — uploads referencing unknown tools are rejected before submit.',
+    example: '"book_room"   // or "end_call" for the inbuilt End-conversation tool',
   },
   {
     name: "arguments",
     meta: "(optional, object)",
     description:
-      "The expected arguments the agent should pass to the tool. Each key is a parameter name and each value is the expected value. If omitted or empty ({}), arguments are not checked — equivalent to setting accept_any_arguments to true.",
-    example: '{"room": "101", "date": "tomorrow"}',
+      "Maps each parameter name the agent is expected to pass to a matcher describing what value to expect. Any parameter you do not list is not checked. Omit the field entirely (or pass {}) when you do not care about arguments — same effect as accept_any_arguments: true.\n\nEach value in the object must be one of the matcher shapes listed below:",
+    subFields: TOOL_CALL_ARG_MATCH_FIELDS,
   },
   {
     name: "accept_any_arguments",
     meta: "(optional, boolean, default: false)",
     description:
-      'If true, the test passes regardless of what arguments the agent sends to this tool. Useful when you only care that the tool was called, not what was passed. When true, the "arguments" field is ignored.',
+      "If true, the test passes regardless of what arguments the agent sends to this tool. Useful when you only care that the tool was called, not what was passed. When true, the arguments field is ignored.",
   },
 ];
 
@@ -498,18 +531,26 @@ export function BulkUploadTestsModal({
         {
           name: "tool_calls",
           description:
-            "A JSON array of expected tool call objects. Each object describes a tool the agent is expected to call and what arguments to expect.",
+            'A JSON array of expected tool call objects. Each object describes a tool the agent is expected to call and what arguments to expect. The array may contain multiple entries if the agent is expected to call multiple tools — order is not significant. Each object has the following fields:',
           fields: TOOL_CALL_FIELDS,
           trailingExamples: [
             {
-              label: "Tool should be called with specific arguments:",
+              label:
+                "Example 1 — single tool call with exact-match arguments",
               example:
-                '[{"tool": "book_room", "arguments": {"room": "101"}, "accept_any_arguments": false}]',
+                '[{\n  "tool": "book_room",\n  "arguments": {\n    "room": { "match_type": "exact", "value": "101" }\n  }\n}]',
             },
             {
-              label: "Tool should be called, any arguments accepted:",
+              label:
+                "Example 2 — multiple expected tool calls in one test (order is not significant)",
               example:
-                '[{"tool": "get_weather", "arguments": {}, "accept_any_arguments": true}]',
+                '[\n  {"tool": "lookup_order", "arguments": {"order_id": { "match_type": "exact", "value": "A-1234" }}},\n  {"tool": "send_sms",     "arguments": {}, "accept_any_arguments": true}\n]',
+            },
+            {
+              label:
+                "Example 3 — inbuilt End-conversation tool (use the inbuilt tool id)",
+              example:
+                '[{"tool": "end_call", "arguments": {}, "accept_any_arguments": true}]',
             },
           ],
         },

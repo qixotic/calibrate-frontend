@@ -820,6 +820,10 @@ export type GuidelineField = {
   meta?: string;
   description: string;
   example?: string;
+  // Optional second-level fields rendered indented under this field. Used
+  // when a field's value has its own sub-schema (e.g. the per-leaf matcher
+  // shapes under a tool-call `arguments` field).
+  subFields?: GuidelineField[];
 };
 
 export type GuidelineColumn = {
@@ -959,17 +963,42 @@ export function generateGuidelinesPdf(doc: GuidelineDoc): Blob {
         if (f.example) {
           writeCodeBlock(f.example, 24);
         }
+        // Nested sub-fields are rendered one indent step deeper with a
+        // slightly smaller heading so the hierarchy reads at a glance.
+        if (f.subFields) {
+          for (const sf of f.subFields) {
+            ensure(30);
+            const subHeader = sf.meta ? `${sf.name}  ${sf.meta}` : sf.name;
+            writeText(subHeader, {
+              size: 10.5,
+              style: "bold",
+              font: "courier",
+              color: [60, 60, 80],
+              indent: 24,
+              lineGap: 1,
+            });
+            writeText(sf.description, {
+              size: 10.5,
+              color: [55, 60, 70],
+              indent: 36,
+              lineGap: 3,
+            });
+            if (sf.example) {
+              writeCodeBlock(sf.example, 36);
+            }
+          }
+        }
       }
     }
     if (col.trailingExamples) {
       for (const ex of col.trailingExamples) {
         ensure(30);
         writeText(ex.label, {
-          size: 10.5,
-          style: "italic",
-          color: [80, 85, 95],
+          size: 11,
+          style: "bold",
+          color: [60, 60, 80],
           indent: 12,
-          lineGap: 1,
+          lineGap: 2,
         });
         writeCodeBlock(ex.example, 12);
       }
