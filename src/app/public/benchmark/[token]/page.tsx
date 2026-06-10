@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { PublicPageLayout, PublicNotFound, PublicLoading } from "@/components/PublicPageLayout";
 import { BenchmarkCombinedLeaderboard, BenchmarkOutputsPanel } from "@/components/eval-details";
 import type { BenchmarkModelResult } from "@/components/eval-details";
-import type { TestRunEvaluator } from "@/components/test-results/shared";
+import { ResultPager, type TestRunEvaluator, type PagerNav } from "@/components/test-results/shared";
 import { ExportResultsButton } from "@/components/ExportResultsButton";
 import { buildBenchmarkCsv } from "@/lib/exportTestResults";
 
@@ -36,6 +36,7 @@ export default function PublicBenchmarkPage() {
   const [activeTab, setActiveTab] = useState<"leaderboard" | "outputs">("leaderboard");
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
   const [selectedTest, setSelectedTest] = useState<{ model: string; testIndex: number } | null>(null);
+  const [nav, setNav] = useState<PagerNav | null>(null);
 
   useEffect(() => { document.title = "LLM benchmark | Calibrate"; }, []);
 
@@ -86,7 +87,7 @@ export default function PublicBenchmarkPage() {
     <PublicPageLayout title="LLM benchmark" contentClassName="max-w-[92rem]">
       <div className="space-y-4 md:space-y-6">
         {/* Tab nav */}
-        <div className="flex items-end justify-between gap-2 border-b border-border">
+        <div className="relative flex items-end justify-between gap-2 border-b border-border">
           <div className="flex gap-2">
             {(["leaderboard", "outputs"] as const).map((tab) => (
               <button
@@ -98,6 +99,16 @@ export default function PublicBenchmarkPage() {
               </button>
             ))}
           </div>
+          {activeTab === "outputs" && nav && selectedTest && (
+            <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <ResultPager
+                currentIndex={nav.currentIndex}
+                total={nav.total}
+                onPrev={nav.goPrev}
+                onNext={nav.goNext}
+              />
+            </div>
+          )}
           {data.model_results && data.model_results.length > 0 && (
             <div className="pb-2">
               <ExportResultsButton
@@ -146,6 +157,7 @@ export default function PublicBenchmarkPage() {
               selectedTest={selectedTest}
               onSelectTest={(model, testIndex) => setSelectedTest({ model, testIndex })}
               onClearSelection={() => setSelectedTest(null)}
+              onNavChange={setNav}
               showControls={true}
               evaluatorsByUuid={Object.fromEntries(
                 (data.evaluators ?? []).map((e) => [e.uuid, e]),

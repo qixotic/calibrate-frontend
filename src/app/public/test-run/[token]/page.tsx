@@ -7,6 +7,8 @@ import {
   TestCaseData,
   JudgeResult,
   TestRunEvaluator,
+  ResultPager,
+  type PagerNav,
 } from "@/components/test-results/shared";
 import { PublicPageLayout, PublicNotFound, PublicLoading } from "@/components/PublicPageLayout";
 import { TestRunOutputsPanel } from "@/components/eval-details";
@@ -53,6 +55,7 @@ export default function PublicTestRunPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [nav, setNav] = useState<PagerNav | null>(null);
 
   useEffect(() => { document.title = "LLM unit test | Calibrate"; }, []);
 
@@ -88,13 +91,18 @@ export default function PublicTestRunPage() {
 
   const results = data.results ?? [];
   const passed = results.filter((r) => getStatus(r) === "passed").length;
-  const failed = results.filter((r) => getStatus(r) === "failed").length;
+  // Errored tests carry an `error` and are shown as their own category in the
+  // list; keep them out of the "failed" count so the summary matches.
+  const errored = results.filter((r) => !!r.error).length;
+  const failed = results.filter(
+    (r) => getStatus(r) === "failed" && !r.error,
+  ).length;
 
   return (
     <PublicPageLayout title="LLM unit test" contentClassName="max-w-[92rem]">
       <div className="space-y-4 md:space-y-6">
         {/* Summary stats */}
-        <div className="flex items-center justify-between gap-4">
+        <div className="relative flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-400">
@@ -103,9 +111,24 @@ export default function PublicTestRunPage() {
               <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400">
                 {failed} failed
               </span>
+              {errored > 0 && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                  {errored} errored
+                </span>
+              )}
             </div>
             <span className="text-[13px] text-muted-foreground">{results.length} total tests</span>
           </div>
+          {nav && selectedId && (
+            <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <ResultPager
+                currentIndex={nav.currentIndex}
+                total={nav.total}
+                onPrev={nav.goPrev}
+                onNext={nav.goNext}
+              />
+            </div>
+          )}
           {results.length > 0 && (
             <ExportResultsButton
               filename={`test-run-${token}`}
@@ -145,6 +168,7 @@ export default function PublicTestRunPage() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onClearSelection={() => setSelectedId(null)}
+              onNavChange={setNav}
               evaluatorsByUuid={Object.fromEntries(
                 (data.evaluators ?? []).map((e) => [e.uuid, e]),
               )}

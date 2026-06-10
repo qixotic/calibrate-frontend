@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   TestCaseOutput,
   TestCaseData,
@@ -8,7 +8,11 @@ import {
   TestDetailView as SharedTestDetailView,
   EmptyStateView,
   EvaluationCriteriaPanel,
+  isTypingTarget,
+  scrollRowByPage,
+  type PagerNav,
 } from "@/components/test-results/shared";
+import { SearchInput } from "@/components/ui/SearchInput";
 import type { DefaultEvaluatorSummary } from "@/lib/defaultEvaluators";
 
 export type TestRunResult = {
@@ -40,6 +44,9 @@ type TestRunOutputsPanelProps = {
   enableEvaluatorLinks?: boolean;
   /** Default correctness evaluator used for legacy next-reply criteria. */
   legacyDefaultEvaluator?: DefaultEvaluatorSummary | null;
+  /** Reports Previous/Next navigation state so a parent (the dialog header)
+   * can render the pager. Must be a stable callback (e.g. a useState setter). */
+  onNavChange?: (nav: PagerNav) => void;
 };
 
 type StatusGroup = {
@@ -58,8 +65,14 @@ export function TestRunOutputsPanel({
   evaluatorsByUuid,
   enableEvaluatorLinks = true,
   legacyDefaultEvaluator,
+  onNavChange,
 }: TestRunOutputsPanelProps) {
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+  // Refs to the list scroll container and the currently-selected row, so
+  // navigation keeps the selection in view (a page at a time).
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const selectedRowRef = useRef<HTMLButtonElement>(null);
 
   const toggleSection = (key: string) => {
     setCollapsedSections((prev) => {
@@ -69,15 +82,91 @@ export function TestRunOutputsPanel({
     });
   };
 
+  // A test that surfaced an `error` neither passed nor failed evaluation —
+  // it errored out. Bucket those separately from genuine evaluation failures.
+  const isErrored = (r: TestRunResult) => !!r.error;
+
+  const query = searchQuery.trim().toLowerCase();
+  const filteredResults = query
+    ? results.filter((r) => r.name.toLowerCase().includes(query))
+    : results;
+
   const groups: StatusGroup[] = [
-    { key: "failed", label: "Failed", dotColor: "bg-red-500", items: results.filter((r) => r.status === "failed") },
-    { key: "passed", label: "Passed", dotColor: "bg-green-500", items: results.filter((r) => r.status === "passed") },
-    { key: "queued", label: "Queued", dotColor: "bg-gray-400", items: results.filter((r) => r.status === "queued") },
-    { key: "running", label: "Running", dotColor: "bg-yellow-500 animate-pulse", items: results.filter((r) => r.status === "running") },
-    { key: "pending", label: "Pending", dotColor: "bg-gray-400", items: results.filter((r) => r.status === "pending") },
+    { key: "failed", label: "Failed", dotColor: "bg-red-500", items: filteredResults.filter((r) => r.status === "failed" && !isErrored(r)) },
+    { key: "errored", label: "Errored", dotColor: "bg-amber-500", items: filteredResults.filter((r) => isErrored(r)) },
+    { key: "passed", label: "Passed", dotColor: "bg-green-500", items: filteredResults.filter((r) => r.status === "passed") },
+    { key: "queued", label: "Queued", dotColor: "bg-gray-400", items: filteredResults.filter((r) => r.status === "queued") },
+    { key: "running", label: "Running", dotColor: "bg-yellow-500 animate-pulse", items: filteredResults.filter((r) => r.status === "running") },
+    { key: "pending", label: "Pending", dotColor: "bg-gray-400", items: filteredResults.filter((r) => r.status === "pending") },
   ].filter((g) => g.items.length > 0);
 
   const selectedResult = results.find((r) => r.id === selectedId);
+
+  // Flattened display order — the same buckets/order as the rendered `groups`,
+  // so the Previous/Next pager (parent renders it in the dialog header) always
+  // matches the visible list. `groups` is already filtered by search above.
+  const orderedItems = groups.flatMap((g) => g.items);
+  const currentIndex = orderedItems.findIndex((r) => r.id === selectedId);
+  const goPrev = () => {
+    if (currentIndex > 0) onSelect(orderedItems[currentIndex - 1].id);
+  };
+  const goNext = () => {
+    if (currentIndex >= 0 && currentIndex < orderedItems.length - 1)
+      onSelect(orderedItems[currentIndex + 1].id);
+  };
+
+  // Keep the latest list/selection in a ref so the reported goPrev/goNext stay
+  // stable while reading fresh values when invoked.
+  const navStateRef = useRef({ orderedItems, selectedId, onSelect });
+  navStateRef.current = { orderedItems, selectedId, onSelect };
+
+  // Surface navigation state to the parent (dialog header pager). Depends only
+  // on the primitive index/length so it doesn't re-fire every render — the
+  // `results` prop (and thus `orderedItems`) is rebuilt by callers each render,
+  // which would otherwise loop setState in the parent.
+  useEffect(() => {
+    if (!onNavChange) return;
+    onNavChange({
+      currentIndex,
+      total: orderedItems.length,
+      goPrev: () => {
+        const s = navStateRef.current;
+        const i = s.orderedItems.findIndex((r) => r.id === s.selectedId);
+        if (i > 0) s.onSelect(s.orderedItems[i - 1].id);
+      },
+      goNext: () => {
+        const s = navStateRef.current;
+        const i = s.orderedItems.findIndex((r) => r.id === s.selectedId);
+        if (i >= 0 && i < s.orderedItems.length - 1)
+          s.onSelect(s.orderedItems[i + 1].id);
+      },
+    });
+  }, [onNavChange, currentIndex, orderedItems.length]);
+
+  // Arrow-key navigation: Up = previous, Down = next. Ignored while typing in
+  // an input (e.g. the search box).
+  useEffect(() => {
+    if (!selectedId) return;
+    const handler = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        goPrev();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        goNext();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, currentIndex, orderedItems.length]);
+
+  // Keep the selected row visible in the list as the selection changes,
+  // scrolling a page at a time rather than row by row.
+  useEffect(() => {
+    scrollRowByPage(listContainerRef.current, selectedRowRef.current);
+  }, [selectedId]);
 
   return (
     <div className="flex h-full overflow-hidden" style={height ? { height } : undefined}>
@@ -87,7 +176,20 @@ export function TestRunOutputsPanel({
           selectedId ? "hidden md:flex" : "flex"
         }`}
       >
-        <div className="flex-1 overflow-y-auto">
+        {/* Search */}
+        <div className="shrink-0 border-b border-border p-3">
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search tests"
+          />
+        </div>
+        <div ref={listContainerRef} className="flex-1 overflow-y-auto">
+          {groups.length === 0 && query && (
+            <div className="p-4 text-sm text-muted-foreground">
+              No tests match &ldquo;{searchQuery}&rdquo;
+            </div>
+          )}
           {groups.map((group) => (
             <div key={group.key} className="p-4">
               <button
@@ -109,13 +211,14 @@ export function TestRunOutputsPanel({
                   {group.items.map((result) => (
                     <button
                       key={result.id}
+                      ref={selectedId === result.id ? selectedRowRef : undefined}
                       type="button"
                       onClick={() => onSelect(result.id)}
                       className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
                         selectedId === result.id ? "bg-muted" : "hover:bg-muted/50"
                       }`}
                     >
-                      <StatusIcon status={result.status} />
+                      <StatusIcon status={isErrored(result) ? "error" : result.status} />
                       <span className="text-sm text-foreground truncate">{result.name}</span>
                     </button>
                   ))}
@@ -162,10 +265,11 @@ export function TestRunOutputsPanel({
 
       {/* Right Panel - Evaluators / Expected Tool Calls (desktop only).
           On mobile this content is rendered inline by `TestDetailView`. */}
-      {selectedResult && (selectedResult.status === "passed" || selectedResult.status === "failed") && (
+      {selectedResult && !isErrored(selectedResult) && (selectedResult.status === "passed" || selectedResult.status === "failed") && (
         <div className="hidden md:flex w-[32rem] border-l border-border flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             <EvaluationCriteriaPanel
+              testName={selectedResult.name}
               evaluation={selectedResult.testCase?.evaluation}
               testCaseEvaluators={selectedResult.testCase?.evaluators}
               passed={

@@ -15,6 +15,7 @@ import {
   DocumentIcon,
   CloseIcon,
   ChevronDownIcon,
+  WarningTriangleIcon,
 } from "@/components/icons";
 import type { DefaultEvaluatorSummary } from "@/lib/defaultEvaluators";
 import { getBinaryLabel, toRatingScale } from "@/lib/binaryLabels";
@@ -209,7 +210,7 @@ function legacyEvaluatorEntry(
 export function StatusIcon({
   status,
 }: {
-  status: "passed" | "failed" | "running" | "pending" | "queued";
+  status: "passed" | "failed" | "error" | "running" | "pending" | "queued";
 }) {
   if (status === "passed") {
     return (
@@ -222,6 +223,13 @@ export function StatusIcon({
     return (
       <div className="w-5 h-5 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
         <XIcon className="w-3 h-3 text-red-500" />
+      </div>
+    );
+  }
+  if (status === "error") {
+    return (
+      <div className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0">
+        <WarningTriangleIcon className="w-3 h-3 text-amber-500" />
       </div>
     );
   }
@@ -1118,6 +1126,7 @@ function EvaluatorPanelCard({
 export function EvaluationCriteriaPanel({
   evaluation,
   testType,
+  testName,
   passed,
   judgeResults,
   reasoning,
@@ -1128,6 +1137,9 @@ export function EvaluationCriteriaPanel({
 }: {
   evaluation?: TestCaseEvaluation;
   testType?: string;
+  /** Selected test name, pinned at the top of the panel above the results.
+   * Full text with horizontal scroll for names wider than the column. */
+  testName?: string;
   /** Top-level test verdict. Used to colour the tool-call evaluator card
    * (green=pass, red=fail). Null/undefined leaves the card neutral, which
    * is the right default while a run is still in progress. */
@@ -1189,20 +1201,48 @@ export function EvaluationCriteriaPanel({
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      <h3 className="text-sm font-semibold text-foreground">
-        {isToolCall ? "Expected Tool Calls" : "Evaluators"}
-      </h3>
+      {testName && (
+        <div className="overflow-x-auto">
+          <span className="block text-[11px] text-muted-foreground">Name</span>
+          <span className="block text-xs text-foreground whitespace-nowrap">
+            {testName}
+          </span>
+        </div>
+      )}
+      {!isToolCall && (
+        <h3 className="text-sm font-semibold text-foreground">Evaluators</h3>
+      )}
 
-      {/* Tool-call test: expected tool calls + verdict-coloured reasoning
-          card. The deterministic tool-call match is binary, so we surface
-          it through the same `EvaluatorVerdictCard` (read mode) the
-          response-test per-evaluator cards use — name fixed to "Tool call
-          test", verdict driven by the top-level `passed` field, reasoning
-          attached as the collapsible explainer. While the run is still
-          pending (`passed` null/undefined), we fall back to the neutral
-          reasoning strip so the card doesn't show a misleading colour. */}
+      {/* Tool-call test: the result (pass/fail + reasoning) shows first,
+          followed by the expected tool calls below it. The deterministic
+          tool-call match is binary, so we surface it through the same
+          `EvaluatorVerdictCard` (read mode) the response-test per-evaluator
+          cards use — name fixed to "Tool call test", verdict driven by the
+          top-level `passed` field, reasoning attached as the collapsible
+          explainer. While the run is still pending (`passed` null/undefined),
+          we fall back to the neutral reasoning strip so the card doesn't show
+          a misleading colour. */}
       {isToolCall && (
         <>
+          {typeof passed === "boolean" ? (
+            <EvaluatorVerdictCard
+              mode="read"
+              name="Tool call test"
+              outputType="binary"
+              enableLink={false}
+              match={passed}
+              reasoning={reasoning ?? null}
+            />
+          ) : (
+            <CollapsibleReasoningStrip
+              text={reasoning}
+              mutedBody={false}
+              leadingLabel="Reasoning"
+            />
+          )}
+          <h3 className="text-sm font-semibold text-foreground">
+            Expected Tool Calls
+          </h3>
           {hasExpectedToolCalls ? (
             <div className="space-y-2">
               {evaluation!.tool_calls!.map((tc, i) => {
@@ -1221,22 +1261,6 @@ export function EvaluationCriteriaPanel({
             <p className="text-xs text-muted-foreground">
               No expected tool calls specified
             </p>
-          )}
-          {typeof passed === "boolean" ? (
-            <EvaluatorVerdictCard
-              mode="read"
-              name="Tool call test"
-              outputType="binary"
-              enableLink={false}
-              match={passed}
-              reasoning={reasoning ?? null}
-            />
-          ) : (
-            <CollapsibleReasoningStrip
-              text={reasoning}
-              mutedBody={false}
-              leadingLabel="Reasoning"
-            />
           )}
         </>
       )}
@@ -1291,13 +1315,110 @@ export function EvaluationCriteriaPanel({
   );
 }
 
+// Scroll a list container so the given row is visible, a page at a time: if the
+// row sits below the viewport it's aligned to the top (revealing a full page of
+// following rows), and if it sits above it's aligned to the bottom. This avoids
+// the row-by-row creep of `scrollIntoView({ block: "nearest" })` during rapid
+// navigation. No-op when the row is already fully visible.
+export function scrollRowByPage(
+  container: HTMLElement | null,
+  row: HTMLElement | null,
+): void {
+  if (!container || !row) return;
+  const cRect = container.getBoundingClientRect();
+  const rRect = row.getBoundingClientRect();
+  const rowTop = rRect.top - cRect.top + container.scrollTop;
+  const rowBottom = rowTop + rRect.height;
+  const viewTop = container.scrollTop;
+  const viewBottom = viewTop + container.clientHeight;
+  let nextTop: number | null = null;
+  if (rowBottom > viewBottom) {
+    nextTop = rowTop;
+  } else if (rowTop < viewTop) {
+    nextTop = rowBottom - container.clientHeight;
+  }
+  if (nextTop !== null) {
+    container.scrollTo({ top: nextTop, behavior: "smooth" });
+  }
+}
+
+// True when a keyboard event originates from a text-entry element, so global
+// shortcuts (e.g. arrow-key result navigation) don't hijack typing.
+export function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName.toUpperCase();
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    el.isContentEditable
+  );
+}
+
+// Navigation state surfaced by the result panels so a parent (e.g. a dialog
+// header) can render the Previous/Next pager outside the panel itself.
+export type PagerNav = {
+  /** 0-based position in the displayed list, or -1 when the current selection
+   * isn't part of the filtered view. */
+  currentIndex: number;
+  /** Number of items in the displayed list. */
+  total: number;
+  goPrev: () => void;
+  goNext: () => void;
+};
+
+// Shared Previous/Next pager. Renders inline (no border/padding of its own) so
+// it can be dropped into a dialog header next to the title and stats. Buttons
+// disable at the ends; the "N of M" counter shows between them.
+export function ResultPager({
+  currentIndex,
+  total,
+  onPrev,
+  onNext,
+}: {
+  currentIndex: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const hasPrev = currentIndex > 0;
+  const hasNext = currentIndex >= 0 && currentIndex < total - 1;
+  const btn =
+    "inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-border bg-background text-sm font-medium text-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors shrink-0";
+  return (
+    <div className="flex items-center gap-2">
+      <button type="button" onClick={onPrev} disabled={!hasPrev} className={btn}>
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+        </svg>
+        Previous
+      </button>
+      {total > 0 && currentIndex >= 0 && (
+        <span className="shrink-0 px-1 text-xs text-muted-foreground tabular-nums">
+          {currentIndex + 1} of {total}
+        </span>
+      )}
+      <button type="button" onClick={onNext} disabled={!hasNext} className={btn}>
+        Next
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 // Shared Stats Display Component
 export function TestStats({
   passedCount,
   failedCount,
+  erroredCount = 0,
 }: {
   passedCount: number;
   failedCount: number;
+  /** Tests that errored out (neither passed nor failed). Hidden when 0. */
+  erroredCount?: number;
 }) {
   return (
     <div className="flex items-center gap-3 text-sm">
@@ -1309,6 +1430,12 @@ export function TestStats({
         <div className="w-2 h-2 rounded-full bg-red-500"></div>
         <span className="text-muted-foreground">{failedCount} failed</span>
       </div>
+      {erroredCount > 0 && (
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 rounded-full bg-amber-500"></div>
+          <span className="text-muted-foreground">{erroredCount} errored</span>
+        </div>
+      )}
     </div>
   );
 }

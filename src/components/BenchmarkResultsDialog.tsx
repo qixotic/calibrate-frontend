@@ -5,7 +5,9 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   CloseIcon,
   SpinnerIcon,
+  ResultPager,
   type TestRunEvaluator,
+  type PagerNav,
 } from "./test-results/shared";
 import {
   BenchmarkOutputsPanel,
@@ -86,6 +88,7 @@ export function BenchmarkResultsDialog({
     model: string;
     testIndex: number;
   } | null>(null);
+  const [nav, setNav] = useState<PagerNav | null>(null);
 
   // Loading and data state
   const [isInitialLoading, setIsInitialLoading] = useState(true);
@@ -488,7 +491,7 @@ export function BenchmarkResultsDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-0 md:p-4 bg-black/50 backdrop-blur-sm">
       <div className="bg-background rounded-none md:rounded-xl w-full max-w-[92rem] h-full md:h-[92vh] flex flex-col shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 md:px-6 py-3 md:py-4">
+        <div className="relative flex items-center justify-between px-4 md:px-6 py-3 md:py-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2 md:gap-3 min-w-0">
               <h2 className="text-base md:text-lg font-semibold text-foreground truncate">
@@ -500,6 +503,17 @@ export function BenchmarkResultsDialog({
             </div>
             <p className="text-xs text-muted-foreground truncate">{agentName}</p>
           </div>
+          {/* Previous/Next pager - centered, desktop only, outputs tab */}
+          {activeTab === "outputs" && nav && selectedTest && (
+            <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <ResultPager
+                currentIndex={nav.currentIndex}
+                total={nav.total}
+                onPrev={nav.goPrev}
+                onNext={nav.goNext}
+              />
+            </div>
+          )}
           <div className="flex items-center gap-2">
             {/* Export results — only shown when benchmark is done */}
             {isDone && !error && hasAnyResults && (
@@ -684,6 +698,7 @@ export function BenchmarkResultsDialog({
                 selectedTest={selectedTest}
                 onSelectTest={handleTestSelect}
                 onClearSelection={() => setSelectedTest(null)}
+                onNavChange={setNav}
                 testNames={testNames}
                 formatModelName={(n) => n.replace("__", "/")}
                 showControls={isDone}

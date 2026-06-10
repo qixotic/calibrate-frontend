@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   TestCaseOutput,
   TestCaseData,
@@ -8,7 +8,11 @@ import {
   TestDetailView,
   EmptyStateView,
   EvaluationCriteriaPanel,
+  isTypingTarget,
+  scrollRowByPage,
+  type PagerNav,
 } from "@/components/test-results/shared";
+import { SearchInput } from "@/components/ui/SearchInput";
 import type { DefaultEvaluatorSummary } from "@/lib/defaultEvaluators";
 import type { BenchmarkEvaluatorSummaryEntry } from "@/lib/benchmarkEvaluatorSummary";
 
@@ -18,6 +22,8 @@ export type BenchmarkTestResult = {
   reasoning?: string;
   output?: TestCaseOutput;
   test_case?: TestCaseData;
+  /** Set when the test errored out (neither passed nor failed evaluation). */
+  error?: string;
   /** Per-evaluator verdicts for response (next-reply) tests. Null for
    * tool-call tests; legacy rows omit the field and fall back to the
    * legacy single-reasoning UI. */
@@ -60,7 +66,44 @@ type BenchmarkOutputsPanelProps = {
   enableEvaluatorLinks?: boolean;
   /** Default correctness evaluator used for legacy next-reply criteria. */
   legacyDefaultEvaluator?: DefaultEvaluatorSummary | null;
+  /** Reports Previous/Next navigation state so a parent (the dialog header)
+   * can render the pager. Must be a stable callback (e.g. a useState setter). */
+  onNavChange?: (nav: PagerNav) => void;
 };
+
+// Derive a benchmark test's display status, shared by the pager ordering and
+// the rendered rows so they always agree.
+function benchmarkTestStatus(
+  tr: BenchmarkTestResult,
+): "error" | "running" | "passed" | "failed" {
+  if (tr.error) return "error";
+  if (tr.passed === null) return "running";
+  return tr.passed ? "passed" : "failed";
+}
+
+// Display name for a benchmark test row (falls back to the placeholder name
+// when the result hasn't arrived yet).
+function benchmarkTestName(
+  tr: BenchmarkTestResult | undefined,
+  index: number,
+  testNames: string[],
+): string {
+  return tr?.name || tr?.test_case?.name || testNames[index] || `Test ${index + 1}`;
+}
+
+// Whether a row passes the current status filter + search query. "errored" is
+// the filter label for the "error" status. `query` must already be lowercased.
+function matchesBenchmarkFilters(
+  status: string,
+  name: string,
+  statusFilter: "all" | "passed" | "failed" | "errored",
+  query: string,
+): boolean {
+  const fStatus = statusFilter === "errored" ? "error" : statusFilter;
+  if (statusFilter !== "all" && status !== fStatus) return false;
+  if (query && !name.toLowerCase().includes(query)) return false;
+  return true;
+}
 
 export function BenchmarkOutputsPanel({
   modelResults,
@@ -78,8 +121,14 @@ export function BenchmarkOutputsPanel({
   evaluatorsByUuid,
   enableEvaluatorLinks = true,
   legacyDefaultEvaluator,
+  onNavChange,
 }: BenchmarkOutputsPanelProps) {
-  const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "errored">("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  // Refs to the list scroll container and the currently-selected row, so
+  // navigation keeps the selection in view (a page at a time).
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const selectedRowRef = useRef<HTMLButtonElement>(null);
 
   const getSelectedTestResult = (): BenchmarkTestResult | null => {
     if (!selectedTest) return null;
@@ -90,6 +139,118 @@ export function BenchmarkOutputsPanel({
 
   const selectedTestResult = getSelectedTestResult();
 
+  // Flattened display order across all models (respecting the status filter
+  // and search), used by the Previous/Next pager the parent renders in the
+  // dialog header.
+  const orderedTests = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const out: { model: string; testIndex: number }[] = [];
+    for (const m of modelResults) {
+      (m.test_results ?? []).forEach((tr, index) => {
+        const status = benchmarkTestStatus(tr);
+        const name = benchmarkTestName(tr, index, testNames);
+        if (!matchesBenchmarkFilters(status, name, statusFilter, q)) return;
+        out.push({ model: m.model, testIndex: index });
+      });
+    }
+    return out;
+  }, [modelResults, statusFilter, searchQuery, testNames]);
+  const currentTestIndex = selectedTest
+    ? orderedTests.findIndex(
+        (t) =>
+          t.model === selectedTest.model && t.testIndex === selectedTest.testIndex,
+      )
+    : -1;
+  // Stepping across model boundaries should reveal the target's model so the
+  // list highlight stays in sync.
+  const selectAndReveal = (t: { model: string; testIndex: number }) => {
+    if (!expandedModels.has(t.model)) {
+      if (onSetExpandedModels) {
+        onSetExpandedModels(new Set([...expandedModels, t.model]));
+      } else {
+        onToggleModel(t.model);
+      }
+    }
+    onSelectTest(t.model, t.testIndex);
+  };
+  const goPrevTest = () => {
+    if (currentTestIndex > 0) selectAndReveal(orderedTests[currentTestIndex - 1]);
+  };
+  const goNextTest = () => {
+    if (currentTestIndex >= 0 && currentTestIndex < orderedTests.length - 1)
+      selectAndReveal(orderedTests[currentTestIndex + 1]);
+  };
+
+  // Keep the latest list/selection in a ref so the reported goPrev/goNext stay
+  // stable while reading fresh values when invoked.
+  const navStateRef = useRef({ orderedTests, selectedTest, selectAndReveal });
+  navStateRef.current = { orderedTests, selectedTest, selectAndReveal };
+
+  // Surface navigation state to the parent (dialog header pager). Depends only
+  // on the primitive index/length so it doesn't re-fire every render — the
+  // `modelResults` prop (and thus `orderedTests`) is rebuilt by callers each
+  // render, which would otherwise loop setState in the parent.
+  useEffect(() => {
+    if (!onNavChange) return;
+    onNavChange({
+      currentIndex: currentTestIndex,
+      total: orderedTests.length,
+      goPrev: () => {
+        const s = navStateRef.current;
+        const st = s.selectedTest;
+        const i = st
+          ? s.orderedTests.findIndex(
+              (t) => t.model === st.model && t.testIndex === st.testIndex,
+            )
+          : -1;
+        if (i > 0) s.selectAndReveal(s.orderedTests[i - 1]);
+      },
+      goNext: () => {
+        const s = navStateRef.current;
+        const st = s.selectedTest;
+        const i = st
+          ? s.orderedTests.findIndex(
+              (t) => t.model === st.model && t.testIndex === st.testIndex,
+            )
+          : -1;
+        if (i >= 0 && i < s.orderedTests.length - 1)
+          s.selectAndReveal(s.orderedTests[i + 1]);
+      },
+    });
+  }, [onNavChange, currentTestIndex, orderedTests.length]);
+
+  // Arrow-key navigation: Up = previous, Down = next. Ignored while typing in
+  // an input (e.g. the search box).
+  useEffect(() => {
+    if (!selectedTest) return;
+    const handler = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        goPrevTest();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        goNextTest();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTest, currentTestIndex, orderedTests.length]);
+
+  // Keep the selected row visible in the list as the selection changes,
+  // scrolling a page at a time rather than row by row.
+  useEffect(() => {
+    scrollRowByPage(listContainerRef.current, selectedRowRef.current);
+  }, [selectedTest?.model, selectedTest?.testIndex]);
+
+  const selectedTestName = selectedTest
+    ? selectedTestResult?.name ||
+      selectedTestResult?.test_case?.name ||
+      testNames[selectedTest.testIndex] ||
+      `Test ${selectedTest.testIndex + 1}`
+    : "";
+
   return (
     <div className="flex h-full overflow-hidden" style={height ? { height } : undefined}>
       {/* Left Panel - Model list with tests */}
@@ -98,6 +259,16 @@ export function BenchmarkOutputsPanel({
           selectedTest ? "hidden md:flex" : "flex"
         }`}
       >
+        {/* Search */}
+        {modelResults.length > 0 && (
+          <div className="shrink-0 border-b border-border p-3">
+            <SearchInput
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="Search tests"
+            />
+          </div>
+        )}
         {/* Filter pills + collapse/expand */}
         {showControls && modelResults.length > 0 && (
           <div className="shrink-0 border-b border-border flex items-center justify-between px-3 py-2">
@@ -124,6 +295,17 @@ export function BenchmarkOutputsPanel({
               >
                 Failed
               </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter(statusFilter === "errored" ? "all" : "errored")}
+                className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                  statusFilter === "errored"
+                    ? "bg-amber-100 text-amber-700 dark:bg-amber-500/30 dark:text-amber-400 ring-1 ring-amber-500/50"
+                    : "bg-amber-100/50 text-amber-700/60 dark:bg-amber-500/10 dark:text-amber-400/60 hover:bg-amber-100 hover:dark:bg-amber-500/20"
+                }`}
+              >
+                Errored
+              </button>
             </div>
             <button
               type="button"
@@ -146,7 +328,7 @@ export function BenchmarkOutputsPanel({
             </button>
           </div>
         )}
-        <div className="flex-1 overflow-y-auto">
+        <div ref={listContainerRef} className="flex-1 overflow-y-auto">
           {modelResults.length > 0 ? (
             modelResults.map((modelResult) => (
               <ModelSection
@@ -158,8 +340,10 @@ export function BenchmarkOutputsPanel({
                 onTestSelect={(testIndex) => onSelectTest(modelResult.model, testIndex)}
                 testNames={testNames}
                 statusFilter={statusFilter}
+                searchQuery={searchQuery}
                 formatModelName={formatModelName}
                 showRunningSpinner={showRunningSpinner}
+                selectedRowRef={selectedRowRef}
               />
             ))
           ) : (
@@ -191,7 +375,21 @@ export function BenchmarkOutputsPanel({
 
         <div className="flex-1 overflow-y-auto">
           {selectedTestResult ? (
-            selectedTestResult.passed === null && showRunningSpinner ? (
+            selectedTestResult.error ? (
+              <div className="p-4 md:p-6">
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <svg className="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                    </svg>
+                    <span className="font-medium text-red-500">Something went wrong</span>
+                  </div>
+                  <p className="text-sm text-red-400">
+                    This test errored out before it could be evaluated. Please reach out to us if this issue persists.
+                  </p>
+                </div>
+              </div>
+            ) : selectedTestResult.passed === null && showRunningSpinner ? (
               <div className="flex items-center justify-center h-full">
                 <div className="flex items-center gap-3">
                   <svg className="w-5 h-5 animate-spin text-muted-foreground" fill="none" viewBox="0 0 24 24">
@@ -222,10 +420,11 @@ export function BenchmarkOutputsPanel({
 
       {/* Right Panel - Evaluators / Expected Tool Calls (desktop only).
           On mobile this content is rendered inline by `TestDetailView`. */}
-      {selectedTestResult && selectedTestResult.passed !== null && (
+      {selectedTestResult && !selectedTestResult.error && selectedTestResult.passed !== null && (
         <div className="hidden md:flex w-[32rem] border-l border-border flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             <EvaluationCriteriaPanel
+              testName={selectedTestName}
               evaluation={selectedTestResult.test_case?.evaluation}
               testCaseEvaluators={selectedTestResult.test_case?.evaluators}
               passed={selectedTestResult.passed}
@@ -251,8 +450,10 @@ function ModelSection({
   onTestSelect,
   testNames,
   statusFilter,
+  searchQuery,
   formatModelName,
   showRunningSpinner = false,
+  selectedRowRef,
 }: {
   modelResult: BenchmarkModelResult;
   isExpanded: boolean;
@@ -260,15 +461,21 @@ function ModelSection({
   selectedTest: { model: string; testIndex: number } | null;
   onTestSelect: (testIndex: number) => void;
   testNames: string[];
-  statusFilter: "all" | "passed" | "failed";
+  statusFilter: "all" | "passed" | "failed" | "errored";
+  searchQuery: string;
   formatModelName: (name: string) => string;
   showRunningSpinner?: boolean;
+  selectedRowRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   const isProcessing = modelResult.success === null;
   const hasResults = modelResult.test_results && modelResult.test_results.length > 0;
   const passedCount = modelResult.passed ?? 0;
-  const failedCount = modelResult.failed ?? 0;
+  const erroredCount = (modelResult.test_results ?? []).filter((t) => t?.error).length;
+  // Errored tests may be lumped into the API's `failed` count — subtract them
+  // so the header buckets line up with the categorised rows below.
+  const failedCount = Math.max((modelResult.failed ?? 0) - erroredCount, 0);
   const totalTests = modelResult.total_tests ?? testNames.length;
+  const query = searchQuery.trim().toLowerCase();
 
   return (
     <div className="border-b border-border">
@@ -301,6 +508,9 @@ function ModelSection({
             {(statusFilter === "all" || statusFilter === "failed") && (
               <span className="text-red-500">{failedCount} failed</span>
             )}
+            {(statusFilter === "all" || statusFilter === "errored") && erroredCount > 0 && (
+              <span className="text-amber-500">{erroredCount} errored</span>
+            )}
           </div>
         )}
       </button>
@@ -329,27 +539,29 @@ function ModelSection({
                   if (!hasResult && !showRunningSpinner) return null;
 
                   const status = hasResult
-                    ? testResult.passed === null ? "running" : testResult.passed ? "passed" : "failed"
+                    ? benchmarkTestStatus(testResult)
                     : "running";
+                  const testName = benchmarkTestName(testResult, index, testNames);
 
-                  if (statusFilter !== "all" && status !== statusFilter) return null;
+                  if (!matchesBenchmarkFilters(status, testName, statusFilter, query))
+                    return null;
 
-                  const isSelected = selectedTest?.model === modelResult.model && selectedTest?.testIndex === index;
-                  const testName = hasResult
-                    ? testResult.name || testResult.test_case?.name || testNames[index] || `Test ${index + 1}`
-                    : testNames[index] || `Test ${index + 1}`;
+                  const isSelected =
+                    selectedTest?.model === modelResult.model &&
+                    selectedTest?.testIndex === index;
 
                   if (hasResult) {
                     return (
                       <button
                         key={index}
+                        ref={isSelected ? selectedRowRef : undefined}
                         type="button"
                         onClick={() => onTestSelect(index)}
                         className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
                           isSelected ? "bg-muted" : "hover:bg-muted/50"
                         }`}
                       >
-                        <StatusIcon status={status as "running" | "passed" | "failed"} />
+                        <StatusIcon status={status as "running" | "passed" | "failed" | "error"} />
                         <span className="text-sm text-foreground truncate">{testName}</span>
                       </button>
                     );

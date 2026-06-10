@@ -12,6 +12,8 @@ import {
   TestRunEvaluator,
   CloseIcon,
   TestStats,
+  ResultPager,
+  type PagerNav,
 } from "./test-results/shared";
 import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { useHideFloatingButton } from "@/components/AppLayout";
@@ -141,6 +143,7 @@ export function TestRunnerDialog({
   const backendAccessToken = useAccessToken();
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [selectedTestUuid, setSelectedTestUuid] = useState<string | null>(null);
+  const [nav, setNav] = useState<PagerNav | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [runStatus, setRunStatus] = useState<
     "queued" | "in_progress" | "done" | "failed"
@@ -848,7 +851,12 @@ export function TestRunnerDialog({
   );
 
   const passedTests = testResults.filter((r) => r.status === "passed");
-  const failedTests = testResults.filter((r) => r.status === "failed");
+  // Errored tests carry an `error` and are surfaced as their own category in
+  // the list; keep them out of the "failed" count so the header matches.
+  const erroredTests = testResults.filter((r) => !!r.error);
+  const failedTests = testResults.filter(
+    (r) => r.status === "failed" && !r.error,
+  );
   const queuedTests = testResults.filter((r) => r.status === "queued");
   const runningTests = testResults.filter((r) => r.status === "running");
   const pendingTests = testResults.filter((r) => r.status === "pending");
@@ -865,25 +873,15 @@ export function TestRunnerDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-0 md:p-4">
       <div className="bg-background rounded-none md:rounded-xl w-full max-w-[92rem] h-full md:h-[92vh] flex flex-col shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b border-border">
-          <div className="min-w-0">
-            <h2 className="text-base md:text-lg font-semibold text-foreground truncate">
-              {runName ?? "Test run"}
-            </h2>
-            <p className="text-xs text-muted-foreground truncate">{agentName}</p>
-          </div>
-          <div className="flex items-center gap-3">
-            {/* Passed/Failed counts - desktop only */}
-            {!isOverallError &&
-              testResults.length > 0 &&
-              (passedTests.length > 0 || failedTests.length > 0) && (
-                <div className="hidden md:block">
-                  <TestStats
-                    passedCount={passedTests.length}
-                    failedCount={failedTests.length}
-                  />
-                </div>
-              )}
+        <div className="relative flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4 border-b border-border">
+          {/* Left: title + action buttons */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="min-w-0">
+              <h2 className="text-base md:text-lg font-semibold text-foreground truncate">
+                {runName ?? "Test run"}
+              </h2>
+              <p className="text-xs text-muted-foreground truncate">{agentName}</p>
+            </div>
             {/* Export results — only shown when run is done */}
             {runStatus === "done" && testResults.length > 0 && (
               <div className="hidden md:block">
@@ -919,9 +917,37 @@ export function TestRunnerDialog({
                 />
               </div>
             )}
+          </div>
+          {/* Previous/Next pager - centered, desktop only */}
+          {nav && selectedTestUuid && (
+            <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <ResultPager
+                currentIndex={nav.currentIndex}
+                total={nav.total}
+                onPrev={nav.goPrev}
+                onNext={nav.goNext}
+              />
+            </div>
+          )}
+          {/* Right: stats + close */}
+          <div className="flex items-center gap-3 shrink-0">
+            {/* Passed/Failed counts - desktop only */}
+            {!isOverallError &&
+              testResults.length > 0 &&
+              (passedTests.length > 0 ||
+                failedTests.length > 0 ||
+                erroredTests.length > 0) && (
+                <div className="hidden md:block">
+                  <TestStats
+                    passedCount={passedTests.length}
+                    failedCount={failedTests.length}
+                    erroredCount={erroredTests.length}
+                  />
+                </div>
+              )}
             <button
               onClick={onClose}
-              className="flex items-center justify-center w-8 h-8 rounded-md hover:bg-muted transition-colors cursor-pointer"
+              className="flex items-center justify-center w-8 h-8 rounded-md hover:bg-muted transition-colors cursor-pointer shrink-0"
             >
               <CloseIcon className="w-5 h-5" />
             </button>
@@ -974,6 +1000,7 @@ export function TestRunnerDialog({
               selectedId={selectedTestUuid}
               onSelect={setSelectedTestUuid}
               onClearSelection={() => setSelectedTestUuid(null)}
+              onNavChange={setNav}
               evaluatorsByUuid={Object.fromEntries(
                 runEvaluators.map((e) => [e.uuid, e]),
               )}
