@@ -130,6 +130,56 @@ export function BenchmarkOutputsPanel({
   const listContainerRef = useRef<HTMLDivElement>(null);
   const selectedRowRef = useRef<HTMLButtonElement>(null);
 
+  // Count how many tests fall in each filterable status across all models, so
+  // we only render a pill when there's something to filter to. A pill is shown
+  // only if its count > 0, and the whole pill row is hidden when fewer than two
+  // statuses are present (i.e. everything passed / failed / errored — nothing
+  // meaningful to filter between).
+  const statusCounts = useMemo(() => {
+    let passed = 0;
+    let failed = 0;
+    let errored = 0;
+    for (const m of modelResults) {
+      for (const tr of m.test_results ?? []) {
+        const status = benchmarkTestStatus(tr);
+        if (status === "passed") passed++;
+        else if (status === "failed") failed++;
+        else if (status === "error") errored++;
+      }
+    }
+    return { passed, failed, errored };
+  }, [modelResults]);
+  const distinctStatuses =
+    (statusCounts.passed > 0 ? 1 : 0) +
+    (statusCounts.failed > 0 ? 1 : 0) +
+    (statusCounts.errored > 0 ? 1 : 0);
+  const showFilterPills = distinctStatuses >= 2;
+
+  // Size the model-list column to fit the longest model name so it never
+  // truncates. Budget extra room for the chevron, gaps, padding, and the
+  // per-model pass/fail counts; clamp so it stays reasonable on both ends.
+  const longestModelNameChars = useMemo(
+    () =>
+      modelResults.reduce(
+        (max, m) => Math.max(max, formatModelName(m.model).length),
+        0,
+      ),
+    [modelResults, formatModelName],
+  );
+  const listColumnWidth = `clamp(18rem, calc(${longestModelNameChars} * 0.5rem + 11rem), 32rem)`;
+
+  // If the active filter's status disappears (live runs change counts) or the
+  // pills are hidden entirely, fall back to showing all tests.
+  useEffect(() => {
+    if (statusFilter === "all") return;
+    const stillValid =
+      showFilterPills &&
+      ((statusFilter === "passed" && statusCounts.passed > 0) ||
+        (statusFilter === "failed" && statusCounts.failed > 0) ||
+        (statusFilter === "errored" && statusCounts.errored > 0));
+    if (!stillValid) setStatusFilter("all");
+  }, [statusFilter, statusCounts, showFilterPills]);
+
   const getSelectedTestResult = (): BenchmarkTestResult | null => {
     if (!selectedTest) return null;
     const modelResult = modelResults.find((m) => m.model === selectedTest.model);
@@ -255,13 +305,14 @@ export function BenchmarkOutputsPanel({
     <div className="flex h-full overflow-hidden" style={height ? { height } : undefined}>
       {/* Left Panel - Model list with tests */}
       <div
-        className={`w-full md:w-80 border-r border-border flex flex-col overflow-hidden ${
+        style={{ "--list-w": listColumnWidth } as React.CSSProperties}
+        className={`w-full md:w-[var(--list-w)] shrink-0 border-r border-border flex flex-col overflow-hidden ${
           selectedTest ? "hidden md:flex" : "flex"
         }`}
       >
         {/* Search */}
         {modelResults.length > 0 && (
-          <div className="shrink-0 border-b border-border p-3">
+          <div className="shrink-0 p-3">
             <SearchInput
               value={searchQuery}
               onChange={setSearchQuery}
@@ -273,39 +324,45 @@ export function BenchmarkOutputsPanel({
         {showControls && modelResults.length > 0 && (
           <div className="shrink-0 border-b border-border flex items-center justify-between px-3 py-2">
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setStatusFilter(statusFilter === "passed" ? "all" : "passed")}
-                className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
-                  statusFilter === "passed"
-                    ? "bg-green-100 text-green-700 dark:bg-green-500/30 dark:text-green-400 ring-1 ring-green-500/50"
-                    : "bg-green-100/50 text-green-700/60 dark:bg-green-500/10 dark:text-green-400/60 hover:bg-green-100 hover:dark:bg-green-500/20"
-                }`}
-              >
-                Passed
-              </button>
-              <button
-                type="button"
-                onClick={() => setStatusFilter(statusFilter === "failed" ? "all" : "failed")}
-                className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
-                  statusFilter === "failed"
-                    ? "bg-red-100 text-red-700 dark:bg-red-500/30 dark:text-red-400 ring-1 ring-red-500/50"
-                    : "bg-red-100/50 text-red-700/60 dark:bg-red-500/10 dark:text-red-400/60 hover:bg-red-100 hover:dark:bg-red-500/20"
-                }`}
-              >
-                Failed
-              </button>
-              <button
-                type="button"
-                onClick={() => setStatusFilter(statusFilter === "errored" ? "all" : "errored")}
-                className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
-                  statusFilter === "errored"
-                    ? "bg-amber-100 text-amber-700 dark:bg-amber-500/30 dark:text-amber-400 ring-1 ring-amber-500/50"
-                    : "bg-amber-100/50 text-amber-700/60 dark:bg-amber-500/10 dark:text-amber-400/60 hover:bg-amber-100 hover:dark:bg-amber-500/20"
-                }`}
-              >
-                Errored
-              </button>
+              {showFilterPills && statusCounts.passed > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter(statusFilter === "passed" ? "all" : "passed")}
+                  className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                    statusFilter === "passed"
+                      ? "bg-green-100 text-green-700 dark:bg-green-500/30 dark:text-green-400 ring-1 ring-green-500/50"
+                      : "bg-green-100/50 text-green-700/60 dark:bg-green-500/10 dark:text-green-400/60 hover:bg-green-100 hover:dark:bg-green-500/20"
+                  }`}
+                >
+                  Passed
+                </button>
+              )}
+              {showFilterPills && statusCounts.failed > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter(statusFilter === "failed" ? "all" : "failed")}
+                  className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                    statusFilter === "failed"
+                      ? "bg-red-100 text-red-700 dark:bg-red-500/30 dark:text-red-400 ring-1 ring-red-500/50"
+                      : "bg-red-100/50 text-red-700/60 dark:bg-red-500/10 dark:text-red-400/60 hover:bg-red-100 hover:dark:bg-red-500/20"
+                  }`}
+                >
+                  Failed
+                </button>
+              )}
+              {showFilterPills && statusCounts.errored > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter(statusFilter === "errored" ? "all" : "errored")}
+                  className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                    statusFilter === "errored"
+                      ? "bg-amber-100 text-amber-700 dark:bg-amber-500/30 dark:text-amber-400 ring-1 ring-amber-500/50"
+                      : "bg-amber-100/50 text-amber-700/60 dark:bg-amber-500/10 dark:text-amber-400/60 hover:bg-amber-100 hover:dark:bg-amber-500/20"
+                  }`}
+                >
+                  Errored
+                </button>
+              )}
             </div>
             <button
               type="button"
@@ -421,7 +478,7 @@ export function BenchmarkOutputsPanel({
       {/* Right Panel - Evaluators / Expected Tool Calls (desktop only).
           On mobile this content is rendered inline by `TestDetailView`. */}
       {selectedTestResult && !selectedTestResult.error && selectedTestResult.passed !== null && (
-        <div className="hidden md:flex w-[32rem] border-l border-border flex-col overflow-hidden">
+        <div className="hidden md:flex w-[26rem] border-l border-border flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             <EvaluationCriteriaPanel
               testName={selectedTestName}
@@ -481,7 +538,7 @@ function ModelSection({
     <div className="border-b border-border">
       <button
         onClick={onToggle}
-        className="w-full px-4 py-3 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer"
+        className="sticky top-0 z-10 bg-background w-full px-4 py-3 flex items-center justify-between border-b border-border hover:bg-muted/50 transition-colors cursor-pointer"
       >
         <div className="flex items-center gap-2 min-w-0">
           <svg
@@ -501,7 +558,7 @@ function ModelSection({
           )}
         </div>
         {!isProcessing && modelResult.success !== null && (
-          <div className="flex items-center gap-2 text-xs flex-shrink-0">
+          <div className="flex items-center gap-2 text-xs flex-shrink-0 ml-4">
             {(statusFilter === "all" || statusFilter === "passed") && (
               <span className="text-green-500">{passedCount} passed</span>
             )}
@@ -516,21 +573,21 @@ function ModelSection({
       </button>
 
       {isExpanded && (
-        <div className="px-4 pb-3">
+        <div className="px-4 pt-3 pb-3">
           {(() => {
             const resultsCount = modelResult.test_results?.length ?? 0;
             const expectedCount = Math.max(totalTests, testNames.length, resultsCount);
 
             if (expectedCount === 0 && !hasResults) {
               return (
-                <div className="ml-4 px-3 py-2 text-sm text-muted-foreground">
+                <div className="px-3 py-2 text-sm text-muted-foreground">
                   {isProcessing ? "Processing..." : "No test results"}
                 </div>
               );
             }
 
             return (
-              <div className="space-y-1 ml-4">
+              <div className="space-y-1">
                 {Array.from({ length: expectedCount }).map((_, index) => {
                   const testResult = modelResult.test_results?.[index];
                   const hasResult = !!testResult;

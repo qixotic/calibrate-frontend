@@ -191,11 +191,11 @@ export function TestRunOutputsPanel({
             </div>
           )}
           {groups.map((group) => (
-            <div key={group.key} className="p-4">
+            <div key={group.key}>
               <button
                 type="button"
                 onClick={() => toggleSection(group.key)}
-                className="w-full text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2 cursor-pointer hover:text-foreground transition-colors"
+                className="sticky top-0 z-10 bg-background w-full text-sm font-medium text-muted-foreground px-4 py-3 flex items-center gap-2 cursor-pointer hover:text-foreground transition-colors border-b border-border"
               >
                 <svg
                   className={`w-3 h-3 text-muted-foreground transition-transform shrink-0 ${collapsedSections.has(group.key) ? "" : "rotate-90"}`}
@@ -207,7 +207,7 @@ export function TestRunOutputsPanel({
                 {group.label} ({group.items.length})
               </button>
               {!collapsedSections.has(group.key) && (
-                <div className="space-y-1">
+                <div className="space-y-1 px-4 py-2">
                   {group.items.map((result) => (
                     <button
                       key={result.id}
@@ -266,7 +266,7 @@ export function TestRunOutputsPanel({
       {/* Right Panel - Evaluators / Expected Tool Calls (desktop only).
           On mobile this content is rendered inline by `TestDetailView`. */}
       {selectedResult && !isErrored(selectedResult) && (selectedResult.status === "passed" || selectedResult.status === "failed") && (
-        <div className="hidden md:flex w-[32rem] border-l border-border flex-col overflow-hidden">
+        <div className="hidden md:flex w-[26rem] border-l border-border flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             <EvaluationCriteriaPanel
               testName={selectedResult.name}
