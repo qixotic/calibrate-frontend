@@ -28,7 +28,7 @@ import { DeleteIconButton } from "@/components/ui/DeleteIconButton";
 import { DuplicateIconButton } from "@/components/ui/DuplicateIconButton";
 import { Tooltip } from "@/components/Tooltip";
 import { useSidebarState } from "@/lib/sidebar";
-import { testTypeLabel } from "@/lib/testTypes";
+import { testTypeLabel, getUnitTestBreakdown } from "@/lib/testTypes";
 import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import {
   readBulkNameConflictMessage,
@@ -65,6 +65,8 @@ type Tool = {
 type TestRunResult = {
   name?: string;
   passed: boolean | null;
+  status?: string;
+  error?: string | null;
   output?: Record<string, any> | null;
   test_case?: {
     name?: string;
@@ -1549,17 +1551,36 @@ function LLMPageInner() {
                               </svg>
                               Running
                             </span>
+                          ) : run.type === "llm-unit-test" ? (
+                            (() => {
+                              // Prefer a per-test breakdown so a run whose tests
+                              // errored out shows "N Pass / N Fail / N Error"
+                              // instead of a single blanket "Error" pill. Fall
+                              // back to run-level status when there are no results.
+                              const breakdown = getUnitTestBreakdown(run.results);
+                              if (!breakdown) {
+                                return run.status === "failed" || run.error ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">Error</span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">Complete</span>
+                                );
+                              }
+                              return (
+                                <>
+                                  {breakdown.passed > 0 && (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">{breakdown.passed} Pass</span>
+                                  )}
+                                  {breakdown.failed > 0 && (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">{breakdown.failed} Fail</span>
+                                  )}
+                                  {breakdown.errored > 0 && (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-500">{breakdown.errored} Error</span>
+                                  )}
+                                </>
+                              );
+                            })()
                           ) : run.status === "failed" || run.error ? (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">Error</span>
-                          ) : run.type === "llm-unit-test" ? (
-                            <>
-                              {run.passed !== null && run.passed > 0 && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">{run.passed} Pass</span>
-                              )}
-                              {run.failed !== null && run.failed > 0 && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">{run.failed} Fail</span>
-                              )}
-                            </>
                           ) : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">Complete</span>
                           )}
@@ -1598,17 +1619,32 @@ function LLMPageInner() {
                                 </svg>
                                 Running
                               </span>
+                            ) : run.type === "llm-unit-test" ? (
+                              (() => {
+                                const breakdown = getUnitTestBreakdown(run.results);
+                                if (!breakdown) {
+                                  return run.status === "failed" || run.error ? (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">Error</span>
+                                  ) : (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">Complete</span>
+                                  );
+                                }
+                                return (
+                                  <>
+                                    {breakdown.passed > 0 && (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">{breakdown.passed} Pass</span>
+                                    )}
+                                    {breakdown.failed > 0 && (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">{breakdown.failed} Fail</span>
+                                    )}
+                                    {breakdown.errored > 0 && (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-500">{breakdown.errored} Error</span>
+                                    )}
+                                  </>
+                                );
+                              })()
                             ) : run.status === "failed" || run.error ? (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">Error</span>
-                            ) : run.type === "llm-unit-test" ? (
-                              <>
-                                {run.passed !== null && run.passed > 0 && (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">{run.passed} Pass</span>
-                                )}
-                                {run.failed !== null && run.failed > 0 && (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500">{run.failed} Fail</span>
-                                )}
-                              </>
                             ) : (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-500">Complete</span>
                             )}

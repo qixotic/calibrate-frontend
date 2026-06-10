@@ -20,7 +20,7 @@ import {
 import { BulkUploadTestsModal } from "@/components/BulkUploadTestsModal";
 import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { showLimitToast } from "@/constants/limits";
-import { testTypeLabel } from "@/lib/testTypes";
+import { testTypeLabel, getUnitTestBreakdown } from "@/lib/testTypes";
 import {
   readBulkNameConflictMessage,
   readNameConflictMessage,
@@ -53,6 +53,8 @@ type TestDetail = TestData & {
 type TestRunResult = {
   name?: string; // Test name (used in in-progress responses)
   passed: boolean | null; // null means test is still running
+  status?: string; // "passed" | "failed" | ... when present
+  error?: string | null; // set when the test errored out before evaluating
   output?: Record<string, any> | null;
   test_case?: {
     name?: string;
@@ -81,17 +83,9 @@ function getTestRunDisplayName(run: TestRun): string {
     return `${modelCount} model${modelCount !== 1 ? "s" : ""}`;
   }
 
-  // For llm-unit-test: if only 1 test and it has a name, show the test name
+  // For llm-unit-test: always show the test count ("1 test" / "N tests"),
+  // including single-test runs (previously these showed the test name).
   const totalTests = run.total_tests ?? run.results?.length ?? 0;
-  if (totalTests === 1 && run.results?.[0]) {
-    // Check name field first (in-progress), then test_case.name (completed)
-    const testName = run.results[0].name || run.results[0].test_case?.name;
-    if (testName) {
-      return testName;
-    }
-  }
-
-  // Otherwise show "N tests"
   return `${totalTests} test${totalTests !== 1 ? "s" : ""}`;
 }
 
@@ -1568,7 +1562,7 @@ export function TestsTabContent({
               <span className="hidden sm:block sm:w-full sm:min-w-0 text-sm text-muted-foreground text-right tabular-nums">
                 {formatRelativeTime(run.updated_at)}
               </span>
-              <div className="flex flex-wrap items-center sm:justify-end gap-2 sm:flex-nowrap sm:justify-self-end">
+              <div className="flex flex-wrap items-center sm:justify-end gap-2 sm:justify-self-end">
                 {run.status === "pending" ||
                 run.status === "queued" ||
                 run.status === "in_progress" ? (
@@ -1594,23 +1588,48 @@ export function TestsTabContent({
                     </svg>
                     Running
                   </span>
+                ) : run.type === "llm-unit-test" ? (
+                  (() => {
+                    // Prefer a per-test breakdown so a run whose tests errored
+                    // out shows "N Success / N Fail / N Error" instead of a
+                    // single blanket "Error" pill. Fall back to the run-level
+                    // status only when there are no usable results.
+                    const breakdown = getUnitTestBreakdown(run.results);
+                    if (!breakdown) {
+                      return run.status === "failed" ? (
+                        <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-500">
+                          Error
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-500">
+                          Complete
+                        </span>
+                      );
+                    }
+                    return (
+                      <>
+                        {breakdown.passed > 0 && (
+                          <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-500">
+                            {breakdown.passed} Success
+                          </span>
+                        )}
+                        {breakdown.failed > 0 && (
+                          <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-500">
+                            {breakdown.failed} Fail
+                          </span>
+                        )}
+                        {breakdown.errored > 0 && (
+                          <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-500">
+                            {breakdown.errored} Error
+                          </span>
+                        )}
+                      </>
+                    );
+                  })()
                 ) : run.status === "failed" ? (
                   <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-500">
                     Error
                   </span>
-                ) : run.type === "llm-unit-test" ? (
-                  <>
-                    {run.passed !== null && run.passed > 0 && (
-                      <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-500">
-                        {run.passed} Success
-                      </span>
-                    )}
-                    {run.failed !== null && run.failed > 0 && (
-                      <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-500">
-                        {run.failed} Fail
-                      </span>
-                    )}
-                  </>
                 ) : (
                   <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-500">
                     Complete
