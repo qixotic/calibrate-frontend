@@ -1,4 +1,5 @@
 "use client";
+import { reportError } from "@/lib/reportError";
 
 import React, { useState, useEffect, useRef } from "react";
 import { signOut } from "next-auth/react";
@@ -128,7 +129,7 @@ export function AgentPicker({
           : [];
         setAgents(formattedAgents);
       } catch (err) {
-        console.error("Error fetching agents:", err);
+        reportError("Error fetching agents:", err);
       } finally {
         setAgentsLoading(false);
       }
@@ -174,6 +175,13 @@ type MultiAgentPickerProps = {
   onToggleAgent: (uuid: string) => void;
   placeholder?: string;
   className?: string;
+  /**
+   * Fired once the agent list has successfully loaded, with the resolved
+   * agents. Lets callers react to an empty workspace (e.g. hide the picker
+   * entirely). Not called on fetch failure, so callers can't mistake an
+   * errored load for a genuinely empty workspace.
+   */
+  onAgentsLoaded?: (agents: Agent[]) => void;
 };
 
 export function MultiAgentPicker({
@@ -181,6 +189,7 @@ export function MultiAgentPicker({
   onToggleAgent,
   placeholder = "Select agents",
   className = "",
+  onAgentsLoaded,
 }: MultiAgentPickerProps) {
   const backendAccessToken = useAccessToken();
   const triggerRef = useRef<HTMLDivElement>(null);
@@ -188,6 +197,13 @@ export function MultiAgentPicker({
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Keep the latest callback in a ref so the fetch effect doesn't depend on
+  // its identity (which would re-run the fetch on every parent render).
+  const onAgentsLoadedRef = useRef(onAgentsLoaded);
+  useEffect(() => {
+    onAgentsLoadedRef.current = onAgentsLoaded;
+  }, [onAgentsLoaded]);
 
   useEffect(() => {
     const fetchAgents = async () => {
@@ -226,8 +242,9 @@ export function MultiAgentPicker({
             }))
           : [];
         setAgents(formattedAgents);
+        onAgentsLoadedRef.current?.(formattedAgents);
       } catch (err) {
-        console.error("Error fetching agents:", err);
+        reportError("Error fetching agents:", err);
       } finally {
         setAgentsLoading(false);
       }

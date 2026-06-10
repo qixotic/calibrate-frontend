@@ -1,4 +1,5 @@
 "use client";
+import { reportError } from "@/lib/reportError";
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
@@ -173,8 +174,9 @@ const TOOL_CALL_FIELDS: GuidelineField[] = [
     name: "tool",
     meta: "(required, string)",
     description:
-      'The identifier of the tool the agent is expected to call. For custom tools, use the tool name exactly as configured under your Tools tab. For Calibrate inbuilt tools, use the inbuilt tool id (currently end_call for the End-conversation tool). The tool must exist on your workspace — uploads referencing unknown tools are rejected before submit.',
-    example: '"book_room"   // or "end_call" for the inbuilt End-conversation tool',
+      "The identifier of the tool the agent is expected to call. For custom tools, use the tool name exactly as configured under your Tools tab. For Calibrate inbuilt tools, use the inbuilt tool id (currently end_call for the End-conversation tool). The tool must exist on your workspace — uploads referencing unknown tools are rejected before submit.",
+    example:
+      '"book_room"   // or "end_call" for the inbuilt End-conversation tool',
   },
   {
     name: "arguments",
@@ -216,8 +218,11 @@ export function BulkUploadTestsModal({
   // parse effect once `evaluatorsFetched` flips to true. Lets us validate
   // the upload as soon as data is available without forcing a re-upload.
   const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [assignToAgents, setAssignToAgents] = useState(false);
   const [selectedAgentUuids, setSelectedAgentUuids] = useState<string[]>([]);
+  // Number of agents in the workspace, learned from the agent picker once it
+  // loads. `null` = not resolved yet. When it resolves to 0 the whole "Assign
+  // tests to agents" section is hidden (nothing to pick).
+  const [agentCount, setAgentCount] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarnings, setUploadWarnings] = useState<string[] | null>(null);
@@ -267,8 +272,8 @@ export function BulkUploadTestsModal({
       setParsedTests([]);
       setParseError(null);
       setPendingFile(null);
-      setAssignToAgents(false);
       setSelectedAgentUuids([]);
+      setAgentCount(null);
       setIsUploading(false);
       setUploadError(null);
       setUploadWarnings(null);
@@ -342,7 +347,7 @@ export function BulkUploadTestsModal({
           }));
         setAvailableLLMEvaluators(llm);
       } catch (err) {
-        console.error("Error fetching evaluators:", err);
+        reportError("Error fetching evaluators:", err);
         setEvaluatorsFetchError(
           err instanceof Error ? err.message : "Failed to load evaluators",
         );
@@ -398,7 +403,7 @@ export function BulkUploadTestsModal({
         const data: AvailableTool[] = await response.json();
         setAvailableTools(data);
       } catch (err) {
-        console.error("Error fetching tools:", err);
+        reportError("Error fetching tools:", err);
         setToolsFetchError(
           err instanceof Error ? err.message : "Failed to load tools",
         );
@@ -531,12 +536,11 @@ export function BulkUploadTestsModal({
         {
           name: "tool_calls",
           description:
-            'A JSON array of expected tool call objects. Each object describes a tool the agent is expected to call and what arguments to expect. The array may contain multiple entries if the agent is expected to call multiple tools — order is not significant. Each object has the following fields:',
+            "A JSON array of expected tool call objects. Each object describes a tool the agent is expected to call and what arguments to expect. The array may contain multiple entries if the agent is expected to call multiple tools — order is not significant. Each object has the following fields:",
           fields: TOOL_CALL_FIELDS,
           trailingExamples: [
             {
-              label:
-                "Example 1 — single tool call with exact-match arguments",
+              label: "Example 1 — single tool call with exact-match arguments",
               example:
                 '[{\n  "tool": "book_room",\n  "arguments": {\n    "room": { "match_type": "exact", "value": "101" }\n  }\n}]',
             },
@@ -865,6 +869,20 @@ export function BulkUploadTestsModal({
         }
 
         setParsedTests(tests);
+
+        // Now that the tests parsed, the optional "Assign tests to agents"
+        // picker renders below the preview. Scroll it into view so the user
+        // notices they can link the tests to agents here. Skipped when the
+        // modal is locked to a single agent (the picker isn't shown then).
+        // The timeout lets the section mount first.
+        if (!lockedAgentUuid) {
+          setTimeout(() => {
+            assignAgentsSectionRef.current?.scrollIntoView({
+              behavior: "smooth",
+              block: "end",
+            });
+          }, 50);
+        }
       },
       error: (error) => {
         setParseError(`Failed to parse CSV: ${error.message}`);
@@ -926,7 +944,9 @@ export function BulkUploadTestsModal({
       } = { type: testType, tests };
       if (lockedAgentUuid) {
         body.agent_uuids = [lockedAgentUuid];
-      } else if (assignToAgents && selectedAgentUuids.length > 0) {
+      } else if (selectedAgentUuids.length > 0) {
+        // Linking to agents is optional in the global /tests flow; only send
+        // the field when the user actually picked some.
         body.agent_uuids = selectedAgentUuids;
       }
 
@@ -969,7 +989,7 @@ export function BulkUploadTestsModal({
         onClose();
       }
     } catch (err) {
-      console.error("Error bulk uploading tests:", err);
+      reportError("Error bulk uploading tests:", err);
       setUploadError(
         err instanceof Error ? err.message : "Failed to upload tests",
       );
@@ -1707,59 +1727,34 @@ export function BulkUploadTestsModal({
             </div>
           )}
 
-          {/* Step 3: Assign to Agents (optional, hidden when modal is
-              locked to a specific agent — see lockedAgentUuid prop). */}
-          {testType && parsedTests.length > 0 && !lockedAgentUuid && (
+          {/* Step 3: Assign to Agents (optional, hidden when modal is locked
+              to a specific agent — see lockedAgentUuid prop). Linking is not
+              required: tests can be uploaded to the library and attached to an
+              agent later, so a workspace with no agents yet isn't blocked.
+              The whole section is also hidden once we learn the workspace has
+              no agents at all (agentCount === 0) — nothing to pick. */}
+          {testType &&
+            parsedTests.length > 0 &&
+            !lockedAgentUuid &&
+            agentCount !== 0 && (
             <div ref={assignAgentsSectionRef}>
-              <div className="flex items-center gap-3 mb-3">
-                <button
-                  onClick={() => {
-                    const next = !assignToAgents;
-                    setAssignToAgents(next);
-                    if (!next) {
-                      setSelectedAgentUuids([]);
-                    } else {
-                      setTimeout(() => {
-                        assignAgentsSectionRef.current?.scrollIntoView({
-                          behavior: "smooth",
-                          block: "end",
-                        });
-                      }, 50);
-                    }
-                  }}
-                  className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors cursor-pointer ${
-                    assignToAgents
-                      ? "bg-foreground border-foreground"
-                      : "bg-background border-muted-foreground hover:border-foreground"
-                  }`}
-                >
-                  {assignToAgents && (
-                    <svg
-                      className="w-3 h-3 text-background"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={3}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M4.5 12.75l6 6 9-13.5"
-                      />
-                    </svg>
-                  )}
-                </button>
+              <div className="flex items-center gap-2 mb-1">
                 <span className="text-sm font-medium text-foreground">
                   Assign tests to agents
                 </span>
+                <span className="text-xs font-normal text-muted-foreground">
+                  (optional)
+                </span>
               </div>
-
-              {assignToAgents && (
-                <MultiAgentPicker
-                  selectedAgentUuids={selectedAgentUuids}
-                  onToggleAgent={toggleAgentSelection}
-                />
-              )}
+              <p className="text-xs text-muted-foreground mb-3">
+                Automatically link these tests to one or more agents but you can
+                also attach them later
+              </p>
+              <MultiAgentPicker
+                selectedAgentUuids={selectedAgentUuids}
+                onToggleAgent={toggleAgentSelection}
+                onAgentsLoaded={(agents) => setAgentCount(agents.length)}
+              />
             </div>
           )}
         </div>
@@ -1800,13 +1795,7 @@ export function BulkUploadTestsModal({
                 </button>
                 <button
                   onClick={handleSubmit}
-                  disabled={
-                    isUploading ||
-                    parsedTests.length === 0 ||
-                    (!lockedAgentUuid &&
-                      assignToAgents &&
-                      selectedAgentUuids.length === 0)
-                  }
+                  disabled={isUploading || parsedTests.length === 0}
                   className="h-10 px-5 rounded-lg text-sm font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                 >
                   {isUploading ? (

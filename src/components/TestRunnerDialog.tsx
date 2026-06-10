@@ -1,4 +1,5 @@
 "use client";
+import { reportError } from "@/lib/reportError";
 
 import React, { useState, useEffect, useRef } from "react";
 import { signOut } from "next-auth/react";
@@ -161,15 +162,6 @@ export function TestRunnerDialog({
   // Without this guard, clicking the in-dialog "back to list" button would
   // immediately re-trigger the auto-open, making the list view unreachable.
   const hasAutoSelectedRef = useRef(false);
-
-  // Debug: Log when selectedTestUuid changes
-  useEffect(() => {
-    console.log("selectedTestUuid changed to:", selectedTestUuid);
-    console.log(
-      "testResults:",
-      testResults.map((r) => ({ uuid: r.test.uuid, name: r.test.name })),
-    );
-  }, [selectedTestUuid, testResults]);
 
   // Auto-open the first completed test when nothing is selected. Covers both
   // - live runs: as soon as one test transitions to passed/failed (and the
@@ -479,7 +471,7 @@ export function TestRunnerDialog({
         }
       }
     } catch (error) {
-      console.error("Error polling task status:", error);
+      reportError("Error polling task status:", error);
       setRunStatus("failed");
       setIsRunning(false);
       setCurrentTaskId(null);
@@ -501,7 +493,7 @@ export function TestRunnerDialog({
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
     if (!backendUrl) {
-      console.error("BACKEND_URL environment variable is not set");
+      reportError("BACKEND_URL environment variable is not set");
       setIsRunning(false);
       return;
     }
@@ -551,7 +543,7 @@ export function TestRunnerDialog({
       // Also poll immediately to get the first result
       pollTaskStatus(newTaskId, backendUrl);
     } catch (error) {
-      console.error("Error starting test run:", error);
+      reportError("Error starting test run:", error);
       setTestResults((prev) =>
         prev.map((r) => ({
           ...r,
@@ -750,7 +742,7 @@ export function TestRunnerDialog({
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
     if (!backendUrl) {
-      console.error("BACKEND_URL environment variable is not set");
+      reportError("BACKEND_URL environment variable is not set");
       setIsRunning(false);
       return;
     }
@@ -819,7 +811,7 @@ export function TestRunnerDialog({
         setIsRunning(false);
       }
     } catch (error) {
-      console.error("Error retrying failed tests:", error);
+      reportError("Error retrying failed tests:", error);
       setTestResults((prev) =>
         prev.map((r) =>
           r.status === "running"
@@ -854,16 +846,6 @@ export function TestRunnerDialog({
   const selectedResult = testResults.find(
     (r) => r.test.uuid === selectedTestUuid,
   );
-
-  // Debug: Log selectedResult
-  useEffect(() => {
-    console.log(
-      "selectedResult:",
-      selectedResult
-        ? { name: selectedResult.test.name, status: selectedResult.status }
-        : null,
-    );
-  }, [selectedResult]);
 
   const passedTests = testResults.filter((r) => r.status === "passed");
   const failedTests = testResults.filter((r) => r.status === "failed");
