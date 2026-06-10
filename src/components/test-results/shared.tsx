@@ -1382,6 +1382,8 @@ export function ResultPager({
   onPrev: () => void;
   onNext: () => void;
 }) {
+  // Nothing to page through when there's only one (or zero) item.
+  if (total <= 1) return null;
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex >= 0 && currentIndex < total - 1;
   const btn =
