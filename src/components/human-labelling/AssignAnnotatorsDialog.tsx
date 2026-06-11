@@ -11,6 +11,20 @@ type Annotator = {
   name: string;
 };
 
+type TaskEvaluator = {
+  uuid: string;
+  name: string;
+  description?: string | null;
+};
+
+/** Returns a new Set with `id` toggled in or out. */
+function toggleInSet(set: Set<string>, id: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
 function parseApiError(err: unknown, fallback: string): string {
   if (!(err instanceof Error)) return fallback;
   const match = err.message.match(/Request failed: \d+ - (.+)$/);
@@ -30,14 +44,24 @@ type AssignAnnotatorsDialogProps = {
   isOpen: boolean;
   accessToken: string;
   selectedItemCount: number;
+  /** Evaluators linked to the task — the pool the job can show in labelling. */
+  evaluators: TaskEvaluator[];
   onClose: () => void;
-  onConfirm: (annotatorIds: string[]) => Promise<void> | void;
+  /**
+   * `evaluatorIds` is `null` to include every task evaluator, or an explicit
+   * subset to show only those evaluators in the created labelling jobs.
+   */
+  onConfirm: (
+    annotatorIds: string[],
+    evaluatorIds: string[] | null,
+  ) => Promise<void> | void;
 };
 
 export function AssignAnnotatorsDialog({
   isOpen,
   accessToken,
   selectedItemCount,
+  evaluators,
   onClose,
   onConfirm,
 }: AssignAnnotatorsDialogProps) {
@@ -48,12 +72,18 @@ export function AssignAnnotatorsDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [includeAllEvaluators, setIncludeAllEvaluators] = useState(true);
+  const [pickedEvaluators, setPickedEvaluators] = useState<Set<string>>(
+    new Set(),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setPicked(new Set());
+    setIncludeAllEvaluators(true);
+    setPickedEvaluators(new Set());
     setSubmitError(null);
     let cancelled = false;
     const run = async () => {
@@ -77,14 +107,7 @@ export function AssignAnnotatorsDialog({
 
   if (!isOpen) return null;
 
-  const toggle = (id: string) => {
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const toggle = (id: string) => setPicked((prev) => toggleInSet(prev, id));
 
   const allPicked = annotators.length > 0 && picked.size === annotators.length;
   const somePicked = picked.size > 0 && !allPicked;
@@ -96,12 +119,25 @@ export function AssignAnnotatorsDialog({
     }
   };
 
+  const toggleEvaluator = (id: string) =>
+    setPickedEvaluators((prev) => toggleInSet(prev, id));
+
+  const evaluatorSelectionValid =
+    includeAllEvaluators || pickedEvaluators.size > 0;
+
+  // Only worth offering an evaluator choice (and the wider layout) when the
+  // task has more than one evaluator to pick between.
+  const showEvaluatorChoice = evaluators.length > 1;
+
   const handleConfirm = async () => {
-    if (picked.size === 0 || submitting) return;
+    if (picked.size === 0 || !evaluatorSelectionValid || submitting) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await onConfirm(Array.from(picked));
+      await onConfirm(
+        Array.from(picked),
+        includeAllEvaluators ? null : Array.from(pickedEvaluators),
+      );
     } catch (err) {
       setSubmitError(parseApiError(err, "Failed to create jobs"));
     } finally {
@@ -117,7 +153,9 @@ export function AssignAnnotatorsDialog({
       }}
     >
       <div
-        className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh]"
+        className={`bg-background border border-border rounded-xl shadow-2xl w-full flex flex-col max-h-[90vh] ${
+          showEvaluatorChoice ? "max-w-5xl" : "max-w-md"
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-6 py-4 border-b border-border flex items-center justify-between">
@@ -147,100 +185,189 @@ export function AssignAnnotatorsDialog({
             </svg>
           </button>
         </div>
-        <div className="p-4 md:p-6 space-y-2 max-h-80 overflow-y-auto">
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <svg
-                className="w-4 h-4 animate-spin"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-              Loading annotators
-            </div>
-          ) : loadError ? (
-            <p className="text-sm text-red-500">{loadError}</p>
-          ) : annotators.length === 0 ? (
-            <EmptyState
-              icon={
-                <svg
-                  className="w-7 h-7 text-muted-foreground"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
-                  />
-                </svg>
-              }
-              title="No annotators yet"
-              description={
-                <>
-                  <Link
-                    href="/human-alignment?tab=annotators"
-                    className="underline underline-offset-2 hover:text-foreground transition-colors"
-                  >
-                    Add annotators
-                  </Link>{" "}
-                  to your account first
-                </>
-              }
-            />
-          ) : (
-            <>
-              {annotators.length > 1 && (
-                <label className="flex items-center gap-3 px-3 py-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={allPicked}
-                    ref={(el) => {
-                      if (el) el.indeterminate = somePicked;
-                    }}
-                    onChange={toggleSelectAll}
-                    aria-label={allPicked ? "Unselect all annotators" : "Select all annotators"}
-                    className="w-4 h-4 cursor-pointer accent-foreground"
-                  />
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {allPicked ? "Unselect all" : "Select all"}
-                  </span>
-                </label>
+        <div className="p-4 md:p-6 overflow-y-auto">
+          <div
+            className={
+              showEvaluatorChoice
+                ? "grid grid-cols-1 md:grid-cols-3 gap-x-10 gap-y-4"
+                : ""
+            }
+          >
+            <div className="space-y-2 flex flex-col min-h-0">
+              {showEvaluatorChoice && (
+                <p className="text-xs font-medium text-muted-foreground">
+                  Annotators
+                </p>
               )}
-              {annotators.map((a) => (
-                <label
-                  key={a.uuid}
-                  className="flex items-center gap-3 px-3 py-2 rounded-md border border-border hover:bg-muted/30 transition-colors cursor-pointer"
-                >
+              <div className="space-y-2 overflow-y-auto pr-1 max-h-[55vh]">
+                {loading ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <svg
+                      className="w-4 h-4 animate-spin"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    Loading annotators
+                  </div>
+                ) : loadError ? (
+                  <p className="text-sm text-red-500">{loadError}</p>
+                ) : annotators.length === 0 ? (
+                  <EmptyState
+                    icon={
+                      <svg
+                        className="w-7 h-7 text-muted-foreground"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.5}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
+                        />
+                      </svg>
+                    }
+                    title="No annotators yet"
+                    description={
+                      <>
+                        <Link
+                          href="/human-alignment?tab=annotators"
+                          className="underline underline-offset-2 hover:text-foreground transition-colors"
+                        >
+                          Add annotators
+                        </Link>{" "}
+                        to your account first
+                      </>
+                    }
+                  />
+                ) : (
+                  <>
+                    {annotators.length > 1 && (
+                      <label className="flex items-center gap-3 px-3 py-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={allPicked}
+                          ref={(el) => {
+                            if (el) el.indeterminate = somePicked;
+                          }}
+                          onChange={toggleSelectAll}
+                          aria-label={
+                            allPicked
+                              ? "Unselect all annotators"
+                              : "Select all annotators"
+                          }
+                          className="w-4 h-4 cursor-pointer accent-foreground"
+                        />
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {allPicked ? "Unselect all" : "Select all"}
+                        </span>
+                      </label>
+                    )}
+                    {annotators.map((a) => (
+                      <label
+                        key={a.uuid}
+                        className="flex items-center gap-3 px-3 py-2 rounded-md border border-border hover:bg-muted/30 transition-colors cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={picked.has(a.uuid)}
+                          onChange={() => toggle(a.uuid)}
+                          className="w-4 h-4 cursor-pointer accent-foreground"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium truncate">
+                            {a.name}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {showEvaluatorChoice && (
+              <div className="space-y-2 md:col-span-2 flex flex-col min-h-0">
+                <label className="flex items-center gap-3 pr-3 pb-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={picked.has(a.uuid)}
-                    onChange={() => toggle(a.uuid)}
+                    checked={includeAllEvaluators}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setIncludeAllEvaluators(checked);
+                      // Seed the explicit picks with everything so unchecking
+                      // "all" doesn't visually flip every card off at once.
+                      if (!checked && pickedEvaluators.size === 0) {
+                        setPickedEvaluators(
+                          new Set(evaluators.map((ev) => ev.uuid)),
+                        );
+                      }
+                    }}
                     className="w-4 h-4 cursor-pointer accent-foreground"
                   />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{a.name}</div>
-                  </div>
+                  <span className="text-sm font-medium">Show all labels</span>
                 </label>
-              ))}
-            </>
+                <p className="text-xs text-muted-foreground">
+                  {includeAllEvaluators
+                    ? "All labels will be shown in the labelling jobs created"
+                    : "Pick one or more labels to show in the labelling jobs created"}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 overflow-y-auto pr-1 max-h-[50vh]">
+                  {evaluators.map((ev) => {
+                    const checked =
+                      includeAllEvaluators || pickedEvaluators.has(ev.uuid);
+                    return (
+                      <label
+                        key={ev.uuid}
+                        className={`flex items-start gap-3 px-3 py-2 rounded-md border border-border transition-colors ${
+                          includeAllEvaluators
+                            ? "opacity-60 cursor-not-allowed"
+                            : "hover:bg-muted/30 cursor-pointer"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={includeAllEvaluators}
+                          onChange={() => toggleEvaluator(ev.uuid)}
+                          className="mt-0.5 w-4 h-4 accent-foreground cursor-pointer disabled:cursor-not-allowed"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">
+                            {ev.name}
+                          </div>
+                          {ev.description && (
+                            <div className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                              {ev.description}
+                            </div>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {submitError && (
+            <p className="text-sm text-red-500 mt-3">{submitError}</p>
           )}
-          {submitError && <p className="text-sm text-red-500">{submitError}</p>}
         </div>
         <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
           <button
@@ -252,7 +379,9 @@ export function AssignAnnotatorsDialog({
           </button>
           <button
             onClick={handleConfirm}
-            disabled={picked.size === 0 || submitting}
+            disabled={
+              picked.size === 0 || !evaluatorSelectionValid || submitting
+            }
             className="h-10 px-4 rounded-md text-sm font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? "Assigning..." : "Assign"}
