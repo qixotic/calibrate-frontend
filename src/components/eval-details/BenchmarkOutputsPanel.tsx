@@ -5,6 +5,7 @@ import {
   JudgeResult,
   TestRunEvaluator,
   StatusIcon,
+  LabellingRowCheckbox,
   TestDetailView,
   EmptyStateView,
   EvaluationCriteriaPanel,
@@ -16,6 +17,7 @@ import { SearchInput } from "@/components/ui/SearchInput";
 import type { DefaultEvaluatorSummary } from "@/lib/defaultEvaluators";
 import type { BenchmarkEvaluatorSummaryEntry } from "@/lib/benchmarkEvaluatorSummary";
 import type { AggStat } from "@/lib/llmMetrics";
+import { isLabellingEligibleRaw } from "@/components/human-labelling/AddRunToLabellingTaskDialog";
 
 export type BenchmarkTestResult = {
   name?: string;
@@ -81,7 +83,16 @@ type BenchmarkOutputsPanelProps = {
   /** Reports Previous/Next navigation state so a parent (the dialog header)
    * can render the pager. Must be a stable callback (e.g. a useState setter). */
   onNavChange?: (nav: PagerNav) => void;
+  /** When set, renders a labelling checkbox on each completed test row. */
+  labellingSelection?: Set<string>;
+  onToggleLabellingSelection?: (key: string) => void;
+  /** Toggle select-all / deselect-all for the given keys. */
+  onLabellingBulkToggle?: (ids: string[]) => void;
 };
+
+export function benchmarkLabellingKey(model: string, testIndex: number): string {
+  return `${model}:${testIndex}`;
+}
 
 // Derive a benchmark test's display status, shared by the pager ordering and
 // the rendered rows so they always agree.
@@ -117,6 +128,28 @@ function matchesBenchmarkFilters(
   return true;
 }
 
+function collectModelLabellingKeys(
+  modelResult: BenchmarkModelResult,
+  testNames: string[],
+  statusFilter: "all" | "passed" | "failed" | "errored",
+  searchQuery: string,
+): string[] {
+  const query = searchQuery.trim().toLowerCase();
+  const resultsCount = modelResult.test_results?.length ?? 0;
+  const totalTests = modelResult.total_tests ?? testNames.length;
+  const expectedCount = Math.max(totalTests, testNames.length, resultsCount);
+  const keys: string[] = [];
+  for (let index = 0; index < expectedCount; index++) {
+    const testResult = modelResult.test_results?.[index];
+    if (!testResult) continue;
+    const status = benchmarkTestStatus(testResult);
+    const testName = benchmarkTestName(testResult, index, testNames);
+    if (!matchesBenchmarkFilters(status, testName, statusFilter, query)) continue;
+    keys.push(benchmarkLabellingKey(modelResult.model, index));
+  }
+  return keys;
+}
+
 export function BenchmarkOutputsPanel({
   modelResults,
   expandedModels,
@@ -134,13 +167,30 @@ export function BenchmarkOutputsPanel({
   enableEvaluatorLinks = true,
   legacyDefaultEvaluator,
   onNavChange,
+  labellingSelection,
+  onToggleLabellingSelection,
+  onLabellingBulkToggle,
 }: BenchmarkOutputsPanelProps) {
   const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "errored">("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const showLabellingCheckboxes = !!onToggleLabellingSelection;
+
+  const visibleLabellingKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const mr of modelResults) {
+      keys.push(
+        ...collectModelLabellingKeys(mr, testNames, statusFilter, searchQuery),
+      );
+    }
+    return keys;
+  }, [modelResults, testNames, statusFilter, searchQuery]);
+  const allVisibleLabellingSelected =
+    visibleLabellingKeys.length > 0 &&
+    visibleLabellingKeys.every((key) => labellingSelection?.has(key));
   // Refs to the list scroll container and the currently-selected row, so
   // navigation keeps the selection in view (a page at a time).
   const listContainerRef = useRef<HTMLDivElement>(null);
-  const selectedRowRef = useRef<HTMLButtonElement>(null);
+  const selectedRowRef = useRef<HTMLDivElement>(null);
 
   // Count how many tests fall in each filterable status across all models, so
   // we only render a pill when there's something to filter to. A pill is shown
@@ -313,6 +363,15 @@ export function BenchmarkOutputsPanel({
       `Test ${selectedTest.testIndex + 1}`
     : "";
 
+  const allModelsExpanded =
+    modelResults.length > 0 &&
+    modelResults.every((m) => expandedModels.has(m.model));
+  const showBulkSelect =
+    showLabellingCheckboxes &&
+    !!onLabellingBulkToggle &&
+    visibleLabellingKeys.length > 0;
+  const showBulkExpand = showControls && modelResults.length > 0;
+
   return (
     <div className="flex h-full overflow-hidden" style={height ? { height } : undefined}>
       {/* Left Panel - Model list with tests */}
@@ -324,7 +383,7 @@ export function BenchmarkOutputsPanel({
       >
         {/* Search */}
         {modelResults.length > 0 && (
-          <div className="shrink-0 p-3">
+          <div className="shrink-0 p-3 border-b border-border">
             <SearchInput
               value={searchQuery}
               onChange={setSearchQuery}
@@ -332,9 +391,57 @@ export function BenchmarkOutputsPanel({
             />
           </div>
         )}
-        {/* Filter pills + collapse/expand */}
-        {showControls && modelResults.length > 0 && (
-          <div className="shrink-0 border-b border-border flex items-center justify-between px-3 py-2">
+        {(showBulkSelect || showBulkExpand) && (
+          <div className="shrink-0 border-b border-border px-3 py-2 flex items-center gap-2">
+            {showBulkSelect && (
+              <button
+                type="button"
+                onClick={() => onLabellingBulkToggle!(visibleLabellingKeys)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors border border-border bg-muted/60 text-foreground hover:bg-muted"
+              >
+                <LabellingRowCheckbox checked={allVisibleLabellingSelected} />
+                {allVisibleLabellingSelected ? "Deselect all" : "Select all"}
+              </button>
+            )}
+            {showBulkExpand && (
+              <button
+                type="button"
+                onClick={() => {
+                  const allModels = modelResults.map((m) => m.model);
+                  if (onSetExpandedModels) {
+                    onSetExpandedModels(
+                      allModelsExpanded ? new Set() : new Set(allModels),
+                    );
+                  } else {
+                    const toToggle = allModelsExpanded
+                      ? allModels
+                      : allModels.filter((m) => !expandedModels.has(m));
+                    toToggle.forEach((m) => onToggleModel(m));
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors border border-dashed border-muted-foreground/40 text-muted-foreground hover:text-foreground hover:border-muted-foreground/60 hover:bg-muted/30"
+              >
+                <svg
+                  className={`w-3 h-3 shrink-0 transition-transform ${allModelsExpanded ? "" : "rotate-180"}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                  />
+                </svg>
+                {allModelsExpanded ? "Collapse all" : "Expand all"}
+              </button>
+            )}
+          </div>
+        )}
+        {/* Filter pills */}
+        {showControls && modelResults.length > 0 && showFilterPills && (
+          <div className="shrink-0 border-b border-border flex items-center px-3 py-2">
             <div className="flex items-center gap-1.5">
               {showFilterPills && statusCounts.passed > 0 && (
                 <button
@@ -376,25 +483,6 @@ export function BenchmarkOutputsPanel({
                 </button>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                const allModels = modelResults.map((m) => m.model);
-                const allExpanded = allModels.every((m) => expandedModels.has(m));
-                if (onSetExpandedModels) {
-                  onSetExpandedModels(allExpanded ? new Set() : new Set(allModels));
-                } else {
-                  // Fallback: toggle individually
-                  const toToggle = allExpanded ? allModels : allModels.filter((m) => !expandedModels.has(m));
-                  toToggle.forEach((m) => onToggleModel(m));
-                }
-              }}
-              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            >
-              {modelResults.every((m) => expandedModels.has(m.model))
-                ? "Collapse all"
-                : "Expand all"}
-            </button>
           </div>
         )}
         <div ref={listContainerRef} className="flex-1 overflow-y-auto">
@@ -413,6 +501,10 @@ export function BenchmarkOutputsPanel({
                 formatModelName={formatModelName}
                 showRunningSpinner={showRunningSpinner}
                 selectedRowRef={selectedRowRef}
+                labellingSelection={labellingSelection}
+                onToggleLabellingSelection={onToggleLabellingSelection}
+                onLabellingBulkToggle={onLabellingBulkToggle}
+                showLabellingCheckboxes={showLabellingCheckboxes}
               />
             ))
           ) : (
@@ -523,6 +615,10 @@ function ModelSection({
   formatModelName,
   showRunningSpinner = false,
   selectedRowRef,
+  labellingSelection,
+  onToggleLabellingSelection,
+  onLabellingBulkToggle,
+  showLabellingCheckboxes = false,
 }: {
   modelResult: BenchmarkModelResult;
   isExpanded: boolean;
@@ -534,7 +630,11 @@ function ModelSection({
   searchQuery: string;
   formatModelName: (name: string) => string;
   showRunningSpinner?: boolean;
-  selectedRowRef: React.RefObject<HTMLButtonElement | null>;
+  selectedRowRef: React.RefObject<HTMLDivElement | null>;
+  labellingSelection?: Set<string>;
+  onToggleLabellingSelection?: (key: string) => void;
+  onLabellingBulkToggle?: (ids: string[]) => void;
+  showLabellingCheckboxes?: boolean;
 }) {
   const isProcessing = modelResult.success === null;
   const hasResults = modelResult.test_results && modelResult.test_results.length > 0;
@@ -545,44 +645,71 @@ function ModelSection({
   const failedCount = Math.max((modelResult.failed ?? 0) - erroredCount, 0);
   const totalTests = modelResult.total_tests ?? testNames.length;
   const query = searchQuery.trim().toLowerCase();
+  const modelLabellingKeys = collectModelLabellingKeys(
+    modelResult,
+    testNames,
+    statusFilter,
+    searchQuery,
+  );
+  const modelAllSelected =
+    modelLabellingKeys.length > 0 &&
+    modelLabellingKeys.every((key) => labellingSelection?.has(key));
 
   return (
     <div className="border-b border-border">
-      <button
-        onClick={onToggle}
-        className="sticky top-0 z-10 bg-background w-full px-4 py-3 flex items-center justify-between border-b border-border hover:bg-muted/50 transition-colors cursor-pointer"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <svg
-            className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${isExpanded ? "rotate-90" : ""}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-          </svg>
-          <span className="text-sm font-medium text-foreground truncate">
-            {formatModelName(modelResult.model)}
-          </span>
-          {isProcessing && (
-            <svg className="w-3.5 h-3.5 animate-spin text-yellow-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+      <div className="sticky top-0 z-10 bg-background border-b border-border flex items-center">
+        <button
+          onClick={onToggle}
+          className="flex-1 px-4 py-3 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer min-w-0"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <svg
+              className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${isExpanded ? "rotate-90" : ""}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
             </svg>
-          )}
-        </div>
-        {!isProcessing && modelResult.success !== null && (
-          <div className="flex items-center gap-2 text-xs flex-shrink-0 ml-4">
-            {(statusFilter === "all" || statusFilter === "passed") && (
-              <span className="text-green-500">{passedCount} passed</span>
-            )}
-            {(statusFilter === "all" || statusFilter === "failed") && (
-              <span className="text-red-500">{failedCount} failed</span>
-            )}
-            {(statusFilter === "all" || statusFilter === "errored") && erroredCount > 0 && (
-              <span className="text-amber-500">{erroredCount} errored</span>
+            <span className="text-sm font-medium text-foreground truncate">
+              {formatModelName(modelResult.model)}
+            </span>
+            {isProcessing && (
+              <svg className="w-3.5 h-3.5 animate-spin text-yellow-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
             )}
           </div>
-        )}
-      </button>
+          {!isProcessing && modelResult.success !== null && (
+            <div className="flex items-center gap-2 text-xs flex-shrink-0 ml-4">
+              {(statusFilter === "all" || statusFilter === "passed") && (
+                <span className="text-green-500">{passedCount} passed</span>
+              )}
+              {(statusFilter === "all" || statusFilter === "failed") && (
+                <span className="text-red-500">{failedCount} failed</span>
+              )}
+              {(statusFilter === "all" || statusFilter === "errored") && erroredCount > 0 && (
+                <span className="text-amber-500">{erroredCount} errored</span>
+              )}
+            </div>
+          )}
+        </button>
+        {showLabellingCheckboxes &&
+          onLabellingBulkToggle &&
+          modelLabellingKeys.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onLabellingBulkToggle(modelLabellingKeys)}
+              title={
+                modelAllSelected
+                  ? `Deselect all ${formatModelName(modelResult.model)} tests`
+                  : `Select all ${formatModelName(modelResult.model)} tests`
+              }
+              className="px-3 py-3 shrink-0 cursor-pointer"
+            >
+              <LabellingRowCheckbox checked={modelAllSelected} />
+            </button>
+          )}
+      </div>
 
       {isExpanded && (
         <div className="px-4 pt-3 pb-3">
@@ -620,19 +747,44 @@ function ModelSection({
                     selectedTest?.testIndex === index;
 
                   if (hasResult) {
+                    const labellingKey = benchmarkLabellingKey(
+                      modelResult.model,
+                      index,
+                    );
+                    const labellingEligible = isLabellingEligibleRaw(testResult);
                     return (
-                      <button
+                      <div
                         key={index}
                         ref={isSelected ? selectedRowRef : undefined}
-                        type="button"
-                        onClick={() => onTestSelect(index)}
-                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
                           isSelected ? "bg-muted" : "hover:bg-muted/50"
                         }`}
                       >
-                        <StatusIcon status={status as "running" | "passed" | "failed" | "error"} />
-                        <span className="text-sm text-foreground truncate">{testName}</span>
-                      </button>
+                        {showLabellingCheckboxes && onToggleLabellingSelection && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleLabellingSelection(labellingKey)}
+                            title={
+                              labellingEligible
+                                ? "Select for labelling"
+                                : "Tool-call tests will be skipped when submitting for labelling"
+                            }
+                            className="cursor-pointer shrink-0"
+                          >
+                            <LabellingRowCheckbox
+                              checked={labellingSelection?.has(labellingKey) ?? false}
+                            />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onTestSelect(index)}
+                          className="flex-1 flex items-center gap-2 min-w-0 cursor-pointer text-left"
+                        >
+                          <StatusIcon status={status as "running" | "passed" | "failed" | "error"} />
+                          <span className="text-sm text-foreground truncate">{testName}</span>
+                        </button>
+                      </div>
                     );
                   }
 
