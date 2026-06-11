@@ -1,7 +1,7 @@
 "use client";
 import { reportError } from "@/lib/reportError";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { signOut } from "next-auth/react";
 import { useAccessToken } from "@/hooks";
 import { getDefaultHeaders } from "@/lib/api";
@@ -18,8 +18,10 @@ import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { useHideFloatingButton } from "@/components/AppLayout";
 import { ShareButton } from "@/components/ShareButton";
 import { ExportResultsButton } from "@/components/ExportResultsButton";
-import { TestRunOutputsPanel } from "./eval-details";
+import { TestRunOutputsPanel, TestRunSummary } from "./eval-details";
 import { buildTestRunCsv } from "@/lib/exportTestResults";
+import { buildEvaluatorSummaryFromResults } from "@/lib/testRunSummary";
+import type { AggStat } from "@/lib/llmMetrics";
 import {
   fetchDefaultLLMNextReplyEvaluator,
   type DefaultEvaluatorSummary,
@@ -78,6 +80,12 @@ type TestCaseResult = {
   /** Per-evaluator verdicts for response tests. Null for tool-call tests
    * and absent for legacy rows. */
   judge_results?: JudgeResult[] | null;
+  /** Per-case agent latency (ms) / cost (USD) / total tokens. Lifted to the
+   * top level by the backend (not inside `output`). Null while the case is
+   * running, for eval-only runs, and — for cost — the `openai` provider. */
+  latency_ms?: number | null;
+  cost?: number | null;
+  total_tokens?: number | null;
   error?: string;
 };
 
@@ -95,6 +103,12 @@ type TestRunStatusResponse = {
    * for every uuid referenced by judge_results (synthesises stubs for
    * legacy rows). */
   evaluators?: TestRunEvaluator[];
+  /** Aggregate per-test latency / cost / total tokens ({mean,min,max,count} |
+   * null) across the whole run. Null for eval-only runs or before metrics
+   * land; cost is also null for the `openai` provider. */
+  latency_ms?: AggStat;
+  cost?: AggStat;
+  total_tokens?: AggStat;
   results_s3_prefix?: string;
   error?: string;
   is_public?: boolean;
@@ -157,6 +171,15 @@ export function TestRunnerDialog({
   // a uuid-keyed map below and passed into TestRunOutputsPanel as the
   // source of truth for per-evaluator metadata.
   const [runEvaluators, setRunEvaluators] = useState<TestRunEvaluator[]>([]);
+  // Aggregate latency / cost blocks from the run-status response, surfaced on
+  // the Summary tab. Per-evaluator metrics aren't sent for single runs, so we
+  // derive those client-side from each case's judge_results (see useMemo below).
+  const [latencyAgg, setLatencyAgg] = useState<AggStat>(null);
+  const [costAgg, setCostAgg] = useState<AggStat>(null);
+  const [tokensAgg, setTokensAgg] = useState<AggStat>(null);
+  // Which tab is showing. Tabs only render once the run is done; we default to
+  // the Summary tab on completion (mirrors the benchmark dialog).
+  const [activeTab, setActiveTab] = useState<"summary" | "outputs">("outputs");
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   // Tracks whether the dialog has already auto-opened a completed test for
   // this open lifecycle. Set back to false on every dialog open / new run /
@@ -164,6 +187,14 @@ export function TestRunnerDialog({
   // Without this guard, clicking the in-dialog "back to list" button would
   // immediately re-trigger the auto-open, making the list view unreachable.
   const hasAutoSelectedRef = useRef(false);
+
+  // Clear the aggregate latency/cost so a prior run's numbers can't leak into
+  // a fresh run / past-run view that omits the fields.
+  const resetSummary = () => {
+    setLatencyAgg(null);
+    setCostAgg(null);
+    setTokensAgg(null);
+  };
 
   // Auto-open the first completed test when nothing is selected. Covers both
   // - live runs: as soon as one test transitions to passed/failed (and the
@@ -222,6 +253,8 @@ export function TestRunnerDialog({
     hasAutoSelectedRef.current = false;
     setCurrentTaskId(taskId);
     setRunEvaluators([]);
+    resetSummary();
+    setActiveTab("outputs");
 
     const isInProgress =
       initialRunStatus === "pending" ||
@@ -268,6 +301,8 @@ export function TestRunnerDialog({
     hasAutoSelectedRef.current = false;
     setCurrentTaskId(null);
     setRunEvaluators([]);
+    resetSummary();
+    setActiveTab("outputs");
     const initialResults: TestResult[] = tests.map((test) => ({
       test,
       status: "pending",
@@ -323,6 +358,11 @@ export function TestRunnerDialog({
       setRunEvaluators(
         Array.isArray(result.evaluators) ? result.evaluators : [],
       );
+      // Sync the aggregate latency / cost blocks. Always set (including the
+      // null case) so a prior run's numbers can't leak in.
+      setLatencyAgg(result.latency_ms ?? null);
+      setCostAgg(result.cost ?? null);
+      setTokensAgg(result.total_tokens ?? null);
 
       // Update test results based on polling response
       setTestResults((prev) => {
@@ -459,6 +499,17 @@ export function TestRunnerDialog({
         if (pollingIntervalRef.current) {
           clearInterval(pollingIntervalRef.current);
           pollingIntervalRef.current = null;
+        }
+
+        // Land on the Summary tab when the run finishes cleanly (mirrors the
+        // benchmark dialog). Polling has stopped by now, so this fires once on
+        // completion and won't fight a later manual tab switch. Skip on failure
+        // since there's no useful summary to show.
+        if (
+          (result.status === "completed" || result.status === "done") &&
+          !result.error
+        ) {
+          setActiveTab("summary");
         }
 
         // If there's an overall error, update remaining pending tests
@@ -860,6 +911,18 @@ export function TestRunnerDialog({
   const runningTests = testResults.filter((r) => r.status === "running");
   const pendingTests = testResults.filter((r) => r.status === "pending");
 
+  // Per-evaluator metrics for the Summary tab. Single test runs don't ship a
+  // backend `evaluator_summary` block (only benchmarks do), so aggregate it
+  // from each case's judge_results against the run's evaluator metadata.
+  const evaluatorSummary = useMemo(
+    () =>
+      buildEvaluatorSummaryFromResults(
+        testResults.map((r) => ({ judge_results: r.judgeResults })),
+        Object.fromEntries(runEvaluators.map((e) => [e.uuid, e])),
+      ),
+    [testResults, runEvaluators],
+  );
+
   // Check if the entire run errored (all tests have errors, none have real results)
   const isOverallError =
     runStatus === "failed" &&
@@ -872,7 +935,7 @@ export function TestRunnerDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-0 md:p-4">
       <div className="bg-background rounded-none md:rounded-xl w-full max-w-[92rem] h-full md:h-[92vh] flex flex-col shadow-2xl">
         {/* Header */}
-        <div className="relative flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4 border-b border-border">
+        <div className="relative flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4">
           {/* Left: title + agent name */}
           <div className="flex items-center gap-3 min-w-0">
             <div className="min-w-0">
@@ -893,8 +956,8 @@ export function TestRunnerDialog({
               <p className="text-xs text-muted-foreground truncate">{agentName}</p>
             </div>
           </div>
-          {/* Previous/Next pager - centered, desktop only */}
-          {nav && selectedTestUuid && (
+          {/* Previous/Next pager - centered, desktop only. Outputs tab only. */}
+          {activeTab === "outputs" && nav && selectedTestUuid && (
             <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
               <ResultPager
                 currentIndex={nav.currentIndex}
@@ -979,7 +1042,48 @@ export function TestRunnerDialog({
             </div>
           </div>
         ) : (
-          /* Content - Split panel */
+          /* Content */
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Tab nav - only once the run is done (mirrors the benchmark dialog) */}
+            {runStatus === "done" && (
+              <div className="border-b border-border px-4 md:px-6 pt-2 overflow-x-auto hide-scrollbar shrink-0">
+                <div className="flex gap-3 md:gap-4 lg:gap-6">
+                  <button
+                    onClick={() => setActiveTab("summary")}
+                    className={`pb-3 px-1 text-sm md:text-base font-medium border-b-2 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0 ${
+                      activeTab === "summary"
+                        ? "border-foreground text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Summary
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("outputs")}
+                    className={`pb-3 px-1 text-sm md:text-base font-medium border-b-2 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0 ${
+                      activeTab === "outputs"
+                        ? "border-foreground text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Outputs
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {runStatus === "done" && activeTab === "summary" ? (
+              <div className="flex-1 overflow-hidden">
+                <TestRunSummary
+                  passed={passedTests.length}
+                  total={passedTests.length + failedTests.length}
+                  latency={latencyAgg}
+                  cost={costAgg}
+                  tokens={tokensAgg}
+                  evaluatorSummary={evaluatorSummary}
+                />
+              </div>
+            ) : (
           <div className="flex-1 overflow-hidden">
             <TestRunOutputsPanel
               results={testResults.map((r) => ({
@@ -1002,6 +1106,8 @@ export function TestRunnerDialog({
               )}
               legacyDefaultEvaluator={defaultNextReplyEvaluator}
             />
+          </div>
+            )}
           </div>
         )}
       </div>

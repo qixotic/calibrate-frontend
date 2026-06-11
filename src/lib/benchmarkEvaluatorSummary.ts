@@ -4,6 +4,14 @@
  */
 
 import type { ChartConfig } from "@/components/eval-details/LeaderboardTab";
+import {
+  METRIC_LABELS,
+  formatLatencyMs,
+  formatCostUsd,
+  formatTokens,
+  formatPercent,
+  formatRating,
+} from "@/lib/llmMetrics";
 
 export type BenchmarkEvaluatorSummaryBinary = {
   metric_key: string;
@@ -45,6 +53,16 @@ export type BenchmarkLeaderboardSummaryRow = {
   passed?: string;
   total?: string;
   pass_rate: string;
+  /** Mean per-test latency in milliseconds — CSV string (mean only), blank /
+   * null when no case reported one. For the full {mean,min,max,count} use
+   * `model_results[].latency_ms` instead. */
+  latency_ms?: string | null;
+  /** Mean per-test cost in USD — CSV string (mean only), blank / null when no
+   * case reported one (e.g. the `openai` provider). */
+  cost?: string | null;
+  /** Mean per-test total tokens — CSV string (mean only), blank / null when no
+   * case reported one. */
+  total_tokens?: string | null;
 };
 
 export type BenchmarkCombinedEvaluatorColumn = {
@@ -63,9 +81,23 @@ export type BenchmarkCombinedLeaderboardPayload = {
   plan: {
     showPassedTotal: boolean;
     showOverallPassRate: boolean;
+    /** True when at least one model reported an average latency. */
+    showLatency: boolean;
+    /** True when at least one model reported an average cost. */
+    showCost: boolean;
+    /** True when at least one model reported average total tokens. */
+    showTokens: boolean;
     evaluators: BenchmarkCombinedEvaluatorColumn[];
   };
 };
+
+/** Coerce a latency / cost field (number or numeric string) to a finite
+ * number, or `undefined` when missing / unparseable. */
+function toFiniteNumber(v: unknown): number | undefined {
+  if (v == null) return undefined;
+  const n = typeof v === "number" ? v : parseFloat(String(v));
+  return Number.isFinite(n) ? n : undefined;
+}
 
 /** Table header and chart title for rating evaluators: `Name (min–max)` when scale is finite. */
 export function benchmarkRatingEvaluatorCaption(
@@ -209,6 +241,9 @@ export function buildBenchmarkCombinedLeaderboardPayload(
 
   const modelsOrdered = orderedCanonicalModels(leaderboardSummary, modelResults);
   const rows: Record<string, unknown>[] = [];
+  let showLatency = false;
+  let showCost = false;
+  let showTokens = false;
 
   for (const model of modelsOrdered) {
     const lbRow = leaderboardSummary?.find(
@@ -223,6 +258,21 @@ export function buildBenchmarkCombinedLeaderboardPayload(
       row.total = lbRow.total;
       const pr = parseFloat(lbRow.pass_rate);
       row.pass_rate = Number.isFinite(pr) ? pr : undefined;
+      const latency = toFiniteNumber(lbRow.latency_ms);
+      if (latency !== undefined) {
+        row.avg_latency_ms = latency;
+        showLatency = true;
+      }
+      const cost = toFiniteNumber(lbRow.cost);
+      if (cost !== undefined) {
+        row.avg_cost = cost;
+        showCost = true;
+      }
+      const tokens = toFiniteNumber(lbRow.total_tokens);
+      if (tokens !== undefined) {
+        row.avg_tokens = tokens;
+        showTokens = true;
+      }
     }
 
     for (const ev of evaluators) {
@@ -248,7 +298,32 @@ export function buildBenchmarkCombinedLeaderboardPayload(
       title: benchmarkScoreLabel,
       dataKey: "pass_rate",
       yDomain: [0, 100],
-      formatTooltip: (v) => `${v.toFixed(1)}%`,
+      formatTooltip: (v) => formatPercent(v),
+    });
+  }
+
+  if (showLatency) {
+    allCharts.push({
+      title: `${METRIC_LABELS.latency} (s)`,
+      dataKey: "avg_latency_ms",
+      formatTooltip: (v) => formatLatencyMs(v),
+      yTickFormatter: (v) => `${(v / 1000).toFixed(1)}`,
+    });
+  }
+
+  if (showCost) {
+    allCharts.push({
+      title: `${METRIC_LABELS.cost} (USD)`,
+      dataKey: "avg_cost",
+      formatTooltip: (v) => formatCostUsd(v),
+    });
+  }
+
+  if (showTokens) {
+    allCharts.push({
+      title: METRIC_LABELS.tokens,
+      dataKey: "avg_tokens",
+      formatTooltip: (v) => formatTokens(v),
     });
   }
 
@@ -258,7 +333,7 @@ export function buildBenchmarkCombinedLeaderboardPayload(
         title: ev.label,
         dataKey: ev.dataKey,
         yDomain: [0, 100],
-        formatTooltip: (v) => `${v.toFixed(1)}%`,
+        formatTooltip: (v) => formatPercent(v),
       });
     } else {
       const sm = ev.scale_min;
@@ -271,7 +346,7 @@ export function buildBenchmarkCombinedLeaderboardPayload(
         title: benchmarkRatingEvaluatorCaption(ev.label, sm, sx),
         dataKey: ev.dataKey,
         yDomain,
-        formatTooltip: (v) => v.toFixed(2),
+        formatTooltip: (v) => formatRating(v),
       });
     }
   }
@@ -287,6 +362,9 @@ export function buildBenchmarkCombinedLeaderboardPayload(
     plan: {
       showPassedTotal,
       showOverallPassRate,
+      showLatency,
+      showCost,
+      showTokens,
       evaluators,
     },
   };

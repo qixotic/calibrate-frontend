@@ -15,6 +15,7 @@ import {
 import { SearchInput } from "@/components/ui/SearchInput";
 import type { DefaultEvaluatorSummary } from "@/lib/defaultEvaluators";
 import type { BenchmarkEvaluatorSummaryEntry } from "@/lib/benchmarkEvaluatorSummary";
+import type { AggStat } from "@/lib/llmMetrics";
 
 export type BenchmarkTestResult = {
   name?: string;
@@ -28,6 +29,11 @@ export type BenchmarkTestResult = {
    * tool-call tests; legacy rows omit the field and fall back to the
    * legacy single-reasoning UI. */
   judge_results?: JudgeResult[] | null;
+  /** Per-case agent latency (ms) / cost (USD) / total tokens. Null while
+   * running, for eval-only runs, and — for cost — the `openai` provider. */
+  latency_ms?: number | null;
+  cost?: number | null;
+  total_tokens?: number | null;
 };
 
 export type BenchmarkModelResult = {
@@ -40,6 +46,12 @@ export type BenchmarkModelResult = {
   test_results: BenchmarkTestResult[] | null;
   /** Aggregate per evaluator from metrics.json criteria (finished models). Optional / null on older jobs. */
   evaluator_summary?: BenchmarkEvaluatorSummaryEntry[] | null;
+  /** This model's aggregate latency / cost / total tokens ({mean,min,max,count}
+   * | null). For the leaderboard table we use `leaderboard_summary` (mean
+   * strings) instead; use these blocks when the full min/max/count is needed. */
+  latency_ms?: AggStat;
+  cost?: AggStat;
+  total_tokens?: AggStat;
 };
 
 type BenchmarkOutputsPanelProps = {
@@ -478,7 +490,7 @@ export function BenchmarkOutputsPanel({
       {/* Right Panel - Evaluators / Expected Tool Calls (desktop only).
           On mobile this content is rendered inline by `TestDetailView`. */}
       {selectedTestResult && !selectedTestResult.error && selectedTestResult.passed !== null && (
-        <div className="hidden md:flex w-[26rem] border-l border-border flex-col overflow-hidden">
+        <div className="hidden md:flex w-[32rem] border-l border-border flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             <EvaluationCriteriaPanel
               testName={selectedTestName}

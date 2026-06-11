@@ -9,6 +9,14 @@ import {
   type BenchmarkLeaderboardSummaryRow,
   type BenchmarkModelLike,
 } from "@/lib/benchmarkEvaluatorSummary";
+import {
+  formatLatencyMs,
+  formatCostUsd,
+  formatTokens,
+  formatPercent,
+  formatRating,
+  METRIC_LABELS,
+} from "@/lib/llmMetrics";
 
 type BenchmarkCombinedLeaderboardProps = {
   leaderboardSummary?: BenchmarkLeaderboardSummaryRow[];
@@ -43,7 +51,46 @@ function columnsFromPayload(
       header: benchmarkScoreLabel,
       render: (v) =>
         typeof v === "number" && Number.isFinite(v) ? (
-          `${v.toFixed(1)}%`
+          formatPercent(v)
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    });
+  }
+
+  if (payload.plan.showLatency) {
+    cols.push({
+      key: "avg_latency_ms",
+      header: METRIC_LABELS.latency,
+      render: (v) =>
+        typeof v === "number" && Number.isFinite(v) ? (
+          formatLatencyMs(v)
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    });
+  }
+
+  if (payload.plan.showCost) {
+    cols.push({
+      key: "avg_cost",
+      header: METRIC_LABELS.cost,
+      render: (v) =>
+        typeof v === "number" && Number.isFinite(v) ? (
+          formatCostUsd(v)
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    });
+  }
+
+  if (payload.plan.showTokens) {
+    cols.push({
+      key: "avg_tokens",
+      header: METRIC_LABELS.tokens,
+      render: (v) =>
+        typeof v === "number" && Number.isFinite(v) ? (
+          formatTokens(v)
         ) : (
           <span className="text-muted-foreground">—</span>
         ),
@@ -60,7 +107,7 @@ function columnsFromPayload(
       header,
       render: (v) =>
         typeof v === "number" && Number.isFinite(v) ? (
-          ev.type === "binary" ? `${v.toFixed(1)}%` : v.toFixed(2)
+          ev.type === "binary" ? formatPercent(v) : formatRating(v)
         ) : (
           <span className="text-muted-foreground">—</span>
         ),
