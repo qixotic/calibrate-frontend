@@ -75,6 +75,30 @@ function variableColumnName(evalName: string, varName: string): string {
   return `${evalName}/${varName}`;
 }
 
+// Column header for an evaluator's per-row "include" flag. A row attaches the
+// evaluator unless this column is explicitly falsy — see `parseIncludeFlag`.
+// The header is just the evaluator name (the variable columns hang off it as
+// "EvalName/varName"), so an evaluator with no variables is represented by
+// this single optional boolean column.
+function includeColumnName(evalName: string): string {
+  return evalName;
+}
+
+// Parse an evaluator's per-row include cell into a tri-state:
+//   true  — attach this evaluator to the row (also the default: column
+//           absent, or cell blank, means "attached")
+//   false — exclude this evaluator from the row
+//   null  — the cell held an unrecognised value (caller surfaces a row error)
+// Accepts the common truthy/falsy spellings so hand-edited CSVs are forgiving.
+function parseIncludeFlag(raw: string | undefined): boolean | null {
+  if (raw === undefined) return true;
+  const s = raw.trim().toLowerCase();
+  if (s === "") return true;
+  if (["true", "yes", "y", "1"].includes(s)) return true;
+  if (["false", "no", "n", "0"].includes(s)) return false;
+  return null;
+}
+
 function csvEscape(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }
@@ -85,10 +109,17 @@ function csvEscape(s: string): string {
 // order the user picked them). Evaluators with no variables don't add
 // any columns — they still get attached to every test on submit.
 function buildResponseSampleCsv(selected: LLMEvaluatorOption[]): string {
-  const variableColumns: { evalName: string; varName: string }[] = [];
+  // Ordered column descriptors: each evaluator contributes an "include"
+  // boolean column followed by one column per variable. This keeps an
+  // evaluator's flag adjacent to its variable values in the sheet.
+  type Col =
+    | { kind: "include"; evalName: string }
+    | { kind: "variable"; evalName: string; varName: string };
+  const columns: Col[] = [];
   for (const e of selected) {
+    columns.push({ kind: "include", evalName: e.name });
     for (const v of e.variables) {
-      variableColumns.push({ evalName: e.name, varName: v.name });
+      columns.push({ kind: "variable", evalName: e.name, varName: v.name });
     }
   }
 
@@ -112,20 +143,36 @@ function buildResponseSampleCsv(selected: LLMEvaluatorOption[]): string {
     },
   ];
 
+  // When the user picked 2+ evaluators, demonstrate per-row selection by
+  // excluding the last evaluator from the second sample row (flag "false"
+  // and blank variable cells). With a single evaluator there's nothing to
+  // exclude (every row needs at least one), so leave both rows attached.
+  const demoExcludedEvalName =
+    selected.length >= 2 ? selected[selected.length - 1].name : null;
+
   const headerCells = [
     "name",
     "conversation_history",
-    ...variableColumns.map((c) =>
-      csvEscape(variableColumnName(c.evalName, c.varName)),
+    ...columns.map((c) =>
+      csvEscape(
+        c.kind === "include"
+          ? includeColumnName(c.evalName)
+          : variableColumnName(c.evalName, c.varName),
+      ),
     ),
   ];
-  const lines = rows.map((r) =>
-    [
+  const lines = rows.map((r, rowIdx) => {
+    const isDemoRow = rowIdx === 1 && demoExcludedEvalName !== null;
+    return [
       csvEscape(r.name),
       csvEscape(JSON.stringify(r.conversation)),
-      ...variableColumns.map(() => csvEscape(r.sampleValue)),
-    ].join(","),
-  );
+      ...columns.map((c) => {
+        const excluded = isDemoRow && c.evalName === demoExcludedEvalName;
+        if (c.kind === "include") return csvEscape(excluded ? "false" : "true");
+        return csvEscape(excluded ? "" : r.sampleValue);
+      }),
+    ].join(",");
+  });
   return `${headerCells.join(",")}\n${lines.join("\n")}\n`;
 }
 
@@ -497,11 +544,22 @@ export function BulkUploadTestsModal({
         },
       ];
       for (const e of committedEvaluators) {
+        columns.push({
+          name: includeColumnName(e.name),
+          description:
+            `Optional. Whether to attach the "${e.name}" evaluator to this test. ` +
+            `Use true or false (defaults to true when the cell is blank or the column is omitted). ` +
+            (e.variables.length > 0
+              ? `When true, every "${e.name}/…" variable column below must have a value on that row.`
+              : `This evaluator has no variables, so this is the only column for it.`) +
+            ` Each test must keep at least one evaluator attached.`,
+          example: '"true"',
+        });
         for (const v of e.variables) {
           const desc = v.description ? ` — ${v.description}` : "";
           columns.push({
             name: variableColumnName(e.name, v.name),
-            description: `Used for the "${e.name}" evaluator${desc}`,
+            description: `Used for the "${e.name}" evaluator${desc}. Leave blank on rows where "${e.name}" is set to false.`,
           });
         }
       }
@@ -750,13 +808,30 @@ export function BulkUploadTestsModal({
           }
 
           if (usesEvaluators) {
-            // Build the EvaluatorRefPayload[] from the user's selected
-            // evaluators. Variable values come from the per-variable
-            // columns; evaluators with no variables get attached without
-            // a `variable_values` field.
+            // Build the EvaluatorRefPayload[] for this row. Each selected
+            // evaluator is attached unless its per-row include column is set
+            // falsy, so a single CSV can attach different evaluators to
+            // different rows. Variable values come from the per-variable
+            // columns; evaluators with no variables get attached without a
+            // `variable_values` field.
             const refs: EvaluatorRefPayload[] = [];
             let rowFailed = false;
             for (const e of committedEvaluators) {
+              const includeRaw = row[includeColumnName(e.name)];
+              const include = parseIncludeFlag(includeRaw);
+              if (include === null) {
+                errors.push(
+                  `Row ${rowNum}: column "${includeColumnName(
+                    e.name,
+                  )}" must be true or false (got "${(includeRaw ?? "").trim()}")`,
+                );
+                rowFailed = true;
+                break;
+              }
+              // Excluded on this row — skip it entirely (any stale variable
+              // values in its columns are ignored).
+              if (!include) continue;
+
               const ref: EvaluatorRefPayload = { evaluator_uuid: e.uuid };
               if (e.variables.length > 0) {
                 const variableValues: Record<string, string> = {};
@@ -770,11 +845,16 @@ export function BulkUploadTestsModal({
                   }
                   variableValues[v.name] = raw;
                 }
+                // An attached variable-based evaluator must have every
+                // variable filled — to drop it from this row, set its include
+                // column to false instead of leaving values blank.
                 if (missing.length > 0) {
                   errors.push(
                     `Row ${rowNum}: missing value(s) for ${missing
                       .map((m) => `"${m}"`)
-                      .join(", ")}`,
+                      .join(
+                        ", ",
+                      )} (set "${includeColumnName(e.name)}" to false to skip this evaluator on this row)`,
                   );
                   rowFailed = true;
                   break;
@@ -784,6 +864,15 @@ export function BulkUploadTestsModal({
               refs.push(ref);
             }
             if (rowFailed) return;
+
+            // Next Reply / Conversation tests are graded by their evaluators,
+            // so a row that excluded all of them can't be scored.
+            if (refs.length === 0) {
+              errors.push(
+                `Row ${rowNum}: no evaluators attached — at least one evaluator must be left on each test`,
+              );
+              return;
+            }
 
             tests.push({
               name: row.name.trim(),
@@ -1187,10 +1276,10 @@ export function BulkUploadTestsModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      {/* Backdrop is non-dismissing: clicking outside must NOT close the
+          dialog (an in-progress bulk upload — type, evaluators, CSV — is easy
+          to lose by a stray click). Use the header X or Cancel to close. */}
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
 
       <div
         className={`relative w-full mx-4 bg-background rounded-2xl shadow-2xl border border-border flex flex-col max-h-[85vh] transition-[max-width] duration-300 ease-out ${
@@ -1313,7 +1402,10 @@ export function BulkUploadTestsModal({
                 Select evaluators to attach
               </label>
               <p className="text-xs text-muted-foreground mb-3">
-                These evaluators will be attached to every test you upload
+                Every test gets all of these by default. To attach an evaluator
+                to only some rows, set its <code className="font-mono">true</code>
+                /<code className="font-mono">false</code> column in the CSV
+                (each test must keep at least one).
               </p>
               {evaluatorsFetchError && (
                 <p className="text-xs text-red-500 mb-2">
@@ -1549,12 +1641,37 @@ export function BulkUploadTestsModal({
                       header: variableColumnName(e.name, v.name),
                     })),
                   );
+                  const evaluatorNameByUuid = new Map(
+                    committedEvaluators.map((e) => [e.uuid, e.name] as const),
+                  );
+                  // Per-column minimum widths (px), matching the
+                  // gridTemplateColumns below: Name, Chat history, Evaluators,
+                  // then one per variable column.
+                  const columnMinPx = [
+                    160,
+                    220,
+                    160,
+                    ...variableColumns.map(() => 220),
+                  ];
+                  const GRID_GAP_PX = 12; // gap-3
+                  const GRID_PADDING_PX = 32; // px-4 (left + right)
+                  // Force the grid element to span the full table width even
+                  // when it overflows the scroll container. Without this the
+                  // grid box only stretches to the visible width, so its
+                  // background and bottom border (the row divider) get clipped
+                  // mid-scroll while the column content spills past them.
+                  const gridMinWidth =
+                    columnMinPx.reduce((sum, w) => sum + w, 0) +
+                    GRID_GAP_PX * (columnMinPx.length - 1) +
+                    GRID_PADDING_PX;
                   const gridStyle = {
                     gridTemplateColumns: [
                       "160px",
                       "minmax(220px,1fr)",
+                      "minmax(160px,0.8fr)",
                       ...variableColumns.map(() => "minmax(220px,1fr)"),
                     ].join(" "),
+                    minWidth: `${gridMinWidth}px`,
                   };
                   return (
                     <div className="mt-3 space-y-2">
@@ -1564,9 +1681,16 @@ export function BulkUploadTestsModal({
                         upload
                       </p>
                       <div className="border border-border rounded-xl overflow-hidden">
-                        <div className="overflow-x-auto">
+                        {/* Single scroll container for BOTH axes. The header
+                            row is sticky so it stays put while the body scrolls
+                            vertically, and everything scrolls together
+                            horizontally — avoids the nested-scroller setup
+                            (an inner overflow-y-auto silently promotes its
+                            overflow-x to auto, spawning a duplicate horizontal
+                            scrollbar). */}
+                        <div className="max-h-[18rem] overflow-auto">
                           <div
-                            className="grid gap-3 px-4 py-2 border-b border-border bg-muted/30"
+                            className="grid gap-3 px-4 py-2 border-b border-border bg-muted/80 backdrop-blur-sm sticky top-0 z-10"
                             style={gridStyle}
                           >
                             <div className="text-xs font-medium text-muted-foreground">
@@ -1574,6 +1698,9 @@ export function BulkUploadTestsModal({
                             </div>
                             <div className="text-xs font-medium text-muted-foreground">
                               Chat history
+                            </div>
+                            <div className="text-xs font-medium text-muted-foreground">
+                              Evaluators
                             </div>
                             {variableColumns.map((c) => (
                               <div
@@ -1585,7 +1712,7 @@ export function BulkUploadTestsModal({
                               </div>
                             ))}
                           </div>
-                          <div className="max-h-[15rem] overflow-y-auto divide-y divide-border">
+                          <div className="divide-y divide-border">
                             {parsedTests.slice(0, 50).map((test, idx) => {
                               let turns: TurnObject[] = [];
                               try {
@@ -1598,7 +1725,9 @@ export function BulkUploadTestsModal({
                                 // validation; this is a defensive fallback.
                               }
                               const valuesByKey = new Map<string, string>();
+                              const attachedUuids = new Set<string>();
                               for (const ref of test.evaluators ?? []) {
+                                attachedUuids.add(ref.evaluator_uuid);
                                 if (!ref.variable_values) continue;
                                 for (const [varName, value] of Object.entries(
                                   ref.variable_values,
@@ -1609,6 +1738,13 @@ export function BulkUploadTestsModal({
                                   );
                                 }
                               }
+                              const attachedNames = (
+                                test.evaluators ?? []
+                              ).map(
+                                (ref) =>
+                                  evaluatorNameByUuid.get(ref.evaluator_uuid) ??
+                                  ref.evaluator_uuid,
+                              );
                               return (
                                 <div
                                   key={idx}
@@ -1624,7 +1760,27 @@ export function BulkUploadTestsModal({
                                   <div className="min-w-0">
                                     <ChatHistoryPreview turns={turns} />
                                   </div>
+                                  <div className="min-w-0 flex flex-wrap gap-1 content-start">
+                                    {attachedNames.length > 0 ? (
+                                      attachedNames.map((name, i) => (
+                                        <span
+                                          key={`${idx}-ev-${i}`}
+                                          className="px-1.5 py-0.5 rounded bg-foreground/10 text-foreground text-[11px] truncate max-w-full"
+                                          title={name}
+                                        >
+                                          {name}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="text-muted-foreground italic">
+                                        (none)
+                                      </span>
+                                    )}
+                                  </div>
                                   {variableColumns.map((c) => {
+                                    const attached = attachedUuids.has(
+                                      c.evaluatorUuid,
+                                    );
                                     const value =
                                       valuesByKey.get(
                                         `${c.evaluatorUuid}/${c.varName}`,
@@ -1632,9 +1788,16 @@ export function BulkUploadTestsModal({
                                     return (
                                       <div
                                         key={`${idx}-${c.evaluatorUuid}-${c.varName}`}
-                                        className="min-w-0 max-h-24 overflow-y-auto pr-1 leading-snug text-foreground break-words whitespace-pre-wrap"
+                                        title={attached ? value : undefined}
+                                        className="min-w-0 pr-1 leading-snug text-foreground break-words line-clamp-4"
                                       >
-                                        {value || (
+                                        {!attached ? (
+                                          <span className="text-muted-foreground italic">
+                                            (excluded)
+                                          </span>
+                                        ) : value ? (
+                                          value
+                                        ) : (
                                           <span className="text-muted-foreground italic">
                                             (empty)
                                           </span>
