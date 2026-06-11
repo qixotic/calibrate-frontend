@@ -278,10 +278,10 @@ export function LabellingRowCheckbox({
     ? "border-border opacity-40"
     : checked
       ? "bg-foreground border-foreground"
-      : "border-border hover:border-muted-foreground";
+      : "border-muted-foreground/60 hover:border-muted-foreground";
   return (
     <span
-      className={`w-5 h-5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${stateClass} ${className}`}
+      className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${stateClass} ${className}`}
     >
       {checked && !disabled && (
         <svg
