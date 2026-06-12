@@ -14,7 +14,10 @@ import { PublicPageLayout, PublicNotFound, PublicLoading } from "@/components/Pu
 import { TestRunOutputsPanel, TestRunSummary } from "@/components/eval-details";
 import { ExportResultsButton } from "@/components/ExportResultsButton";
 import { buildTestRunCsv } from "@/lib/exportTestResults";
-import { buildEvaluatorSummaryFromResults } from "@/lib/testRunSummary";
+import {
+  buildEvaluatorSummaryFromResults,
+  toolCallPassFail,
+} from "@/lib/testRunSummary";
 import type { AggStat } from "@/lib/llmMetrics";
 
 type TestCaseResult = {
@@ -107,6 +110,14 @@ export default function PublicTestRunPage() {
   const failed = results.filter(
     (r) => getStatus(r) === "failed" && !r.error,
   ).length;
+  // Tool-call pass/fail split for the Summary tab's dedicated card.
+  const toolCall = toolCallPassFail(
+    results.map((r) => ({
+      toolCall: r.test_case?.evaluation?.type === "tool_call",
+      passed: getStatus(r) === "passed",
+      failed: getStatus(r) === "failed" && !r.error,
+    })),
+  );
 
   return (
     <PublicPageLayout title="LLM unit test" contentClassName="max-w-[92rem]">
@@ -167,6 +178,7 @@ export default function PublicTestRunPage() {
             latency={data.latency_ms ?? null}
             cost={data.cost ?? null}
             tokens={data.total_tokens ?? null}
+            toolCall={toolCall}
             evaluatorSummary={buildEvaluatorSummaryFromResults(
               results,
               Object.fromEntries(

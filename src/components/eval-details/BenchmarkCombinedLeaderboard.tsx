@@ -97,6 +97,21 @@ function columnsFromPayload(
     });
   }
 
+  // Tool-call pass rate sits after the cost/token metrics, just before the
+  // per-evaluator columns.
+  if (payload.plan.showToolCallPassRate) {
+    cols.push({
+      key: "tool_call_pass_rate",
+      header: "Tool-call pass rate (%)",
+      render: (v) =>
+        typeof v === "number" && Number.isFinite(v) ? (
+          formatPercent(v)
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    });
+  }
+
   for (const ev of payload.plan.evaluators) {
     const header =
       ev.type === "rating"
