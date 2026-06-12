@@ -12,6 +12,8 @@ import { toast } from "sonner";
 import JSZip from "jszip";
 import { LIMITS, showLimitToast } from "@/constants/limits";
 import { DeleteConfirmationDialog } from "../DeleteConfirmationDialog";
+import { RowIndexBadge } from "./RowIndexBadge";
+import { LazyAudioPlayer } from "./LazyAudioPlayer";
 import type { DatasetItem } from "@/lib/datasets";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -508,9 +510,14 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
         setUploadStatus(builtStatus);
         setInvalidRowIds(new Set());
 
-        for (const row of builtRows) {
-          if (row.audioFile) {
-            const s3Path = await uploadFileToS3(row.audioFile);
+        // Upload audio to S3 with bounded concurrency — a sequential loop is
+        // far too slow for datasets in the thousands.
+        const pending = builtRows.filter((r) => r.audioFile);
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < pending.length) {
+            const row = pending[cursor++];
+            const s3Path = await uploadFileToS3(row.audioFile!);
             if (s3Path) {
               setNewRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, s3Path } : r)));
               setUploadStatus((prev) => ({ ...prev, [row.id]: "success" }));
@@ -518,7 +525,13 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
               setUploadStatus((prev) => ({ ...prev, [row.id]: "error" }));
             }
           }
-        }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(LIMITS.STT_UPLOAD_CONCURRENCY, pending.length) },
+            worker,
+          ),
+        );
       } catch {
         toast.error("Failed to process ZIP file");
       } finally {
@@ -558,7 +571,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
 
             const isPlayableUrl = item.audio_path?.startsWith("http");
             const audioEl = isPlayableUrl ? (
-              <audio src={item.audio_path!} controls className="h-8 w-96" style={{ minWidth: "250px" }} />
+              <LazyAudioPlayer src={item.audio_path!} className="w-96" />
             ) : (
               <div className="h-8 px-3 rounded text-[12px] font-medium border border-border bg-background flex items-center gap-1.5 text-muted-foreground min-w-[140px]">
                 <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -607,9 +620,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
               >
                 {/* Desktop */}
                 <div className="hidden md:flex items-center gap-2">
-                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[11px] font-medium text-muted-foreground">
-                    {index + 1}
-                  </div>
+                  <RowIndexBadge value={index + 1} />
                   <div className="flex-shrink-0">{audioEl}</div>
                   {textField}
                   {deleteBtn}
@@ -617,13 +628,11 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
                 {/* Mobile */}
                 <div className="md:hidden space-y-2">
                   <div className="flex items-center justify-between">
-                    <div className="flex-shrink-0 w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[11px] font-medium text-muted-foreground">
-                      {index + 1}
-                    </div>
+                    <RowIndexBadge value={index + 1} />
                     {deleteBtn}
                   </div>
                   {isPlayableUrl ? (
-                    <audio src={item.audio_path!} controls className="w-full h-8" />
+                    <LazyAudioPlayer src={item.audio_path!} className="w-full" />
                   ) : (
                     <div className="h-8 px-3 rounded text-[12px] font-medium border border-border bg-background flex items-center gap-1.5 text-muted-foreground w-full">
                       <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -658,11 +667,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
 
             const triggerFileInput = () => fileInputRefs.current[row.id]?.click();
 
-            const rowBadge = (
-              <div className="flex-shrink-0 w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[11px] font-medium text-muted-foreground">
-                {rowNumber}
-              </div>
-            );
+            const rowBadge = <RowIndexBadge value={rowNumber} />;
 
             const deleteButton = (newRows.length > 1 || savedCount > 0) && (
               <button
@@ -746,7 +751,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
                   <div className="flex-shrink-0 flex items-center gap-2">
                     {isUploaded && row.audioUrl ? (
                       <div className="flex items-center gap-2">
-                        <audio src={row.audioUrl} controls className="h-8 w-96" style={{ minWidth: "250px" }} />
+                        <LazyAudioPlayer src={row.audioUrl} className="w-96" />
                         {replaceButton}
                       </div>
                     ) : (
@@ -771,7 +776,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
                   <div>
                     {isUploaded && row.audioUrl ? (
                       <div className="space-y-1.5">
-                        <audio src={row.audioUrl} controls className="w-full h-8" />
+                        <LazyAudioPlayer src={row.audioUrl} className="w-full" />
                         {replaceButton}
                       </div>
                     ) : (
