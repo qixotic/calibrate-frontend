@@ -13,6 +13,8 @@ import {
   evaluatorDescriptionMapFromRuns,
   ratingRange,
   type TTSEvaluatorColumn,
+  type LatencyMetric,
+  type TTSLeaderboardSummary,
 } from "@/components/eval-details";
 import { readEvaluatorCell } from "@/components/eval-details/EvaluatorScoreCell";
 import { ExportZipButton } from "@/components/ExportZipButton";
@@ -21,8 +23,6 @@ import {
   getPublicDefaultEvaluator,
   type PublicDefaultEvaluator,
 } from "@/lib/publicEvaluators";
-
-type LatencyMetric = { mean: number; std: number; values: number[] };
 
 // Mirrors the auth TTS page: the response now optionally carries
 // `evaluator_runs` per provider with the live evaluator `name`, stable
@@ -73,22 +73,13 @@ type ProviderResult = {
   evaluator_runs?: EvaluatorRun[] | null;
 };
 
-type LeaderboardSummary = {
-  run: string;
-  count: number;
-  llm_judge_score?: number;
-  ttfb?: number;
-  processing_time?: number;
-  [k: string]: string | number | undefined;
-};
-
 type EvaluationResult = {
   task_id: string;
   status: "queued" | "in_progress" | "done" | "failed";
   language?: string;
   dataset_name?: string | null;
   provider_results?: ProviderResult[];
-  leaderboard_summary?: LeaderboardSummary[];
+  leaderboard_summary?: TTSLeaderboardSummary[];
   error?: string | null;
 };
 

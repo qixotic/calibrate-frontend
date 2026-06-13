@@ -33,25 +33,14 @@ import {
   fetchDefaultLLMNextReplyEvaluator,
   type DefaultEvaluatorSummary,
 } from "@/lib/defaultEvaluators";
-
-type LeaderboardSummary = {
-  model: string;
-  passed: string;
-  total: string;
-  pass_rate: string;
-  /** Mean per-test latency (ms) / cost (USD) / total tokens as CSV strings —
-   * mean only, blank/null when no case reported one. Absent on older jobs. */
-  latency_ms?: string | null;
-  cost?: string | null;
-  total_tokens?: string | null;
-};
+import type { BenchmarkLeaderboardSummaryRow } from "@/lib/benchmarkEvaluatorSummary";
 
 type BenchmarkStatusResponse = {
   task_id: string;
   name?: string;
   status: string;
   model_results?: BenchmarkModelResult[];
-  leaderboard_summary?: LeaderboardSummary[];
+  leaderboard_summary?: BenchmarkLeaderboardSummaryRow[];
   /** Top-level per-evaluator metadata block — see TestRunEvaluator. */
   evaluators?: TestRunEvaluator[];
   results_s3_prefix?: string;
@@ -107,7 +96,7 @@ export function BenchmarkResultsDialog({
   const [taskStatus, setTaskStatus] = useState<string>("queued");
   const [modelResults, setModelResults] = useState<BenchmarkModelResult[]>([]);
   const [leaderboardSummary, setLeaderboardSummary] = useState<
-    LeaderboardSummary[] | undefined
+    BenchmarkLeaderboardSummaryRow[] | undefined
   >(undefined);
   const [error, setError] = useState<string | null>(null);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);

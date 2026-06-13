@@ -21,6 +21,8 @@ import {
   TTSEvaluationOutputs,
   ratingRange,
   type TTSEvaluatorColumn,
+  type LatencyMetric,
+  type TTSLeaderboardSummary,
 } from "@/components/eval-details";
 import { readEvaluatorCell } from "@/components/eval-details/EvaluatorScoreCell";
 import { useSidebarState } from "@/lib/sidebar";
@@ -34,12 +36,6 @@ import {
   deriveEvaluatorColumns,
   TTS_RESERVED_METRIC_KEYS,
 } from "@/lib/evaluatorColumns";
-
-type LatencyMetric = {
-  mean: number;
-  std: number;
-  values: number[];
-};
 
 // The TTS evaluate API response now carries per-attached-evaluator data in
 // three formats we need to support side-by-side:
@@ -118,15 +114,6 @@ type ProviderResult = {
   evaluator_runs?: EvaluatorRun[] | null;
 };
 
-type LeaderboardSummary = {
-  run: string;
-  count: number;
-  llm_judge_score?: number;
-  ttfb?: number;
-  processing_time?: number;
-  [k: string]: string | number | undefined;
-};
-
 type EvaluationResult = {
   task_id: string;
   status: "queued" | "in_progress" | "done" | "failed";
@@ -135,7 +122,7 @@ type EvaluationResult = {
   dataset_name?: string | null;
   evaluator_uuids?: string[] | null;
   provider_results?: ProviderResult[];
-  leaderboard_summary?: LeaderboardSummary[];
+  leaderboard_summary?: TTSLeaderboardSummary[];
   error?: string | null;
   is_public?: boolean;
   share_token?: string | null;

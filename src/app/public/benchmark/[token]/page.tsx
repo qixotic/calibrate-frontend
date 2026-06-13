@@ -5,27 +5,16 @@ import { useParams } from "next/navigation";
 import { PublicPageLayout, PublicNotFound, PublicLoading } from "@/components/PublicPageLayout";
 import { BenchmarkCombinedLeaderboard, BenchmarkOutputsPanel } from "@/components/eval-details";
 import type { BenchmarkModelResult } from "@/components/eval-details";
+import type { BenchmarkLeaderboardSummaryRow } from "@/lib/benchmarkEvaluatorSummary";
 import { ResultPager, type TestRunEvaluator, type PagerNav } from "@/components/test-results/shared";
 import { ExportResultsButton } from "@/components/ExportResultsButton";
 import { buildBenchmarkCsv } from "@/lib/exportTestResults";
-
-type LeaderboardSummary = {
-  model: string;
-  passed: string;
-  total: string;
-  pass_rate: string;
-  /** Mean per-test latency (ms) / cost (USD) / total tokens as CSV strings —
-   * mean only, blank/null when no case reported one. Absent on older jobs. */
-  latency_ms?: string | null;
-  cost?: string | null;
-  total_tokens?: string | null;
-};
 
 type BenchmarkStatusResponse = {
   task_id: string;
   status: string;
   model_results?: BenchmarkModelResult[];
-  leaderboard_summary?: LeaderboardSummary[];
+  leaderboard_summary?: BenchmarkLeaderboardSummaryRow[];
   /** Top-level per-evaluator metadata block — see TestRunEvaluator. */
   evaluators?: TestRunEvaluator[];
   error?: string;
