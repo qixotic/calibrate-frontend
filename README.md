@@ -44,6 +44,14 @@ npm start
 
 To deploy your own instance of Calibrate's frontend, see [SELF_HOSTING.md](SELF_HOSTING.md).
 
+## Contributing
+
+Calibrate also includes a [backend][calibrate-backend] and [CLI][calibrate-cli].
+
+Reference docs:
+
+- [Architecture diagram](https://docs.google.com/presentation/d/e/2PACX-1vQMXtGLWFnT6pGuYLS-P8GU6iHVVRFHYksgntIpcs-OzNp9DrPdq7ra38eYrCBxe8Y--6ZhK8Z-fyD8/pub?start=false&loop=false&delayms=3000)
+
 ## License
 
 This work is licensed under a
@@ -51,6 +59,8 @@ This work is licensed under a
 
 [![CC BY-SA 4.0][cc-by-sa-image]][cc-by-sa]
 
+[calibrate-backend]: https://github.com/ARTPARK-SAHAI-ORG/calibrate-backend
+[calibrate-cli]: https://github.com/ARTPARK-SAHAI-ORG/calibrate
 [cc-by-sa]: http://creativecommons.org/licenses/by-sa/4.0/
 [cc-by-sa-image]: https://licensebuttons.net/l/by-sa/4.0/88x31.png
 [cc-by-sa-shield]: https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg
