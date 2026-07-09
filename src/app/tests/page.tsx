@@ -26,6 +26,11 @@ import {
 import { BulkUploadTestsModal } from "@/components/BulkUploadTestsModal";
 import { DeleteIconButton } from "@/components/ui/DeleteIconButton";
 import { DuplicateIconButton } from "@/components/ui/DuplicateIconButton";
+import {
+  SearchModeInput,
+  matchesSearchMode,
+  type SearchMode,
+} from "@/components/ui/SearchModeInput";
 import { Tooltip } from "@/components/Tooltip";
 import { useSidebarState } from "@/lib/sidebar";
 import { testTypeLabel, getUnitTestBreakdown } from "@/lib/testTypes";
@@ -147,6 +152,7 @@ function LLMPageInner() {
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<TestTypeFilterValue>("all");
+  const [searchMode, setSearchMode] = useState<SearchMode>("contains");
 
   // All runs state
   const [allRuns, setAllRuns] = useState<AllRun[]>([]);
@@ -931,16 +937,19 @@ function LLMPageInner() {
     setInitialEvaluators(undefined);
   };
 
-  // Filter tests based on type filter and search query
+  // Filter tests by type filter and search query. The match mode applies to
+  // each searchable field; a test matches if any field satisfies the mode.
+  // All filtering is client-side over the already-fetched list.
+  const trimmedQuery = searchQuery.trim();
   const filteredTests = tests.filter((test) => {
     if (typeFilter !== "all" && test.type !== typeFilter) return false;
-    const q = searchQuery.toLowerCase();
-    if (!q) return true;
+    if (!trimmedQuery) return true;
     return (
-      (test.name && test.name.toLowerCase().includes(q)) ||
-      (test.description && test.description.toLowerCase().includes(q)) ||
+      (test.name && matchesSearchMode(test.name, trimmedQuery, searchMode)) ||
+      (test.description &&
+        matchesSearchMode(test.description, trimmedQuery, searchMode)) ||
       (test.config?.description &&
-        test.config.description.toLowerCase().includes(q))
+        matchesSearchMode(test.config.description, trimmedQuery, searchMode))
     );
   });
 
@@ -1025,51 +1034,37 @@ function LLMPageInner() {
         {/* ── TESTS TAB ── */}
         {activeTab === "tests" && <>
 
-        {/* Search Input */}
-        <div className="relative max-w-md">
-          <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-            <svg
-              className="w-5 h-5 text-muted-foreground"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-              />
-            </svg>
-          </div>
-          <input
-            type="text"
+        {/* Search + type filter share a row on wider screens (stacked on
+            mobile). The search's inline match-mode selector narrows how the
+            query matches; the type filter narrows the list (and select-all)
+            to one type, dropping selections that no longer match so the bulk
+            "Delete selected" count stays in step with what's visible. */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-4">
+          <SearchModeInput
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={setSearchQuery}
+            mode={searchMode}
+            onModeChange={setSearchMode}
             placeholder="Search tests"
-            className="w-full h-9 md:h-10 pl-10 pr-4 rounded-md text-sm md:text-base border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
+            className="sm:max-w-md"
+          />
+          <TestTypeFilter
+            value={typeFilter}
+            onChange={(value) => {
+              setTypeFilter(value);
+              if (value !== "all") {
+                setSelectedTestUuids((prev) => {
+                  const next = new Set(prev);
+                  for (const test of tests) {
+                    if (test.type !== value) next.delete(test.uuid);
+                  }
+                  return next;
+                });
+              }
+            }}
+            className="w-fit flex-shrink-0"
           />
         </div>
-
-        {/* Test type filter — narrows the list (and select-all) to one type.
-            Changing it drops selections that no longer match so the bulk
-            "Delete selected" count stays in step with what's visible. */}
-        <TestTypeFilter
-          value={typeFilter}
-          onChange={(value) => {
-            setTypeFilter(value);
-            if (value !== "all") {
-              setSelectedTestUuids((prev) => {
-                const next = new Set(prev);
-                for (const test of tests) {
-                  if (test.type !== value) next.delete(test.uuid);
-                }
-                return next;
-              });
-            }
-          }}
-          className="w-fit"
-        />
 
         {tests.length > 0 && (
           <p className="text-sm text-muted-foreground">
