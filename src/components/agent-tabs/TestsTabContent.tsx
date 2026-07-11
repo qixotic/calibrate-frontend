@@ -19,6 +19,7 @@ import {
   EvaluatorVariableDef,
 } from "@/components/AddTestDialog";
 import { BulkUploadTestsModal } from "@/components/BulkUploadTestsModal";
+import { AgentDefaultsPromptDialog } from "@/components/agent-tabs/AgentDefaultsPromptDialog";
 import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { showLimitToast } from "@/constants/limits";
 import { testTypeLabel, getUnitTestBreakdown } from "@/lib/testTypes";
@@ -35,6 +36,12 @@ import {
   readBulkNameConflictMessage,
   readNameConflictMessage,
 } from "@/lib/parseBackendError";
+import {
+  type EvaluatorData,
+  fetchAgentEvaluators,
+  addEvaluatorsToAgent,
+  fetchAllEvaluators,
+} from "@/lib/evaluatorApi";
 
 type TestData = {
   uuid: string;
@@ -214,6 +221,23 @@ export function TestsTabContent({
 }: TestsTabContentProps) {
   const backendAccessToken = useAccessToken();
   const maxRowsPerEval = useMaxRowsPerEval();
+  // Evaluators currently attached to this agent — used to seed a new test's
+  // evaluators and to detect which of a saved test's evaluators are "new" to
+  // the agent (so we can offer to add them to the agent's defaults).
+  const [agentEvaluators, setAgentEvaluators] = useState<EvaluatorData[]>([]);
+  // False until the first load of the agent's evaluators settles. New-test
+  // seeding waits on this so it never seeds off an empty (not-yet-loaded) list.
+  const [agentEvaluatorsLoaded, setAgentEvaluatorsLoaded] = useState(false);
+  // Post-save prompt: evaluators referenced by the just-saved test that aren't
+  // yet attached to the agent. Shown on top of the still-open AddTestDialog
+  // so the user can dismiss the prompt and continue reviewing the test.
+  const [agentDefaultsPrompt, setAgentDefaultsPrompt] = useState<
+    { uuid: string; name: string }[] | null
+  >(null);
+  const [agentDefaultsError, setAgentDefaultsError] = useState<string | null>(
+    null,
+  );
+  const [isAttachingDefaults, setIsAttachingDefaults] = useState(false);
   // Agent tests state (tests attached to the agent)
   const [agentTests, setAgentTests] = useState<TestData[]>([]);
   const [agentTestsLoading, setAgentTestsLoading] = useState(true);
@@ -251,9 +275,8 @@ export function TestsTabContent({
   >(new Set());
   const [isAddingTests, setIsAddingTests] = useState(false);
   const [testsSearchQuery, setTestsSearchQuery] = useState("");
-  const [testsSearchMode, setTestsSearchMode] = useState<SearchMode>(
-    "contains"
-  );
+  const [testsSearchMode, setTestsSearchMode] =
+    useState<SearchMode>("contains");
   // Filter the agent's tests by test type. "all" shows both kinds; "response"
   // is Next Reply, "tool_call" is Tool Call. The "select all" checkbox keys
   // off `filteredAgentTests`, so this filter also narrows what gets selected.
@@ -411,6 +434,65 @@ export function TestsTabContent({
       fetchAgentTests();
     }
   }, [agentUuid, backendAccessToken, fetchAgentTests]);
+
+  // Load the agent's attached evaluators (best-effort; failure just means new
+  // tests fall back to the default seed and the post-save prompt is skipped).
+  const loadAgentEvaluators = useCallback(async () => {
+    if (!agentUuid || !backendAccessToken) return;
+    try {
+      setAgentEvaluators(
+        await fetchAgentEvaluators(agentUuid, backendAccessToken),
+      );
+    } catch (err) {
+      reportError("Error fetching agent evaluators:", err);
+    } finally {
+      // Mark settled even on failure so seeding falls back rather than hanging.
+      setAgentEvaluatorsLoaded(true);
+    }
+  }, [agentUuid, backendAccessToken]);
+
+  useEffect(() => {
+    loadAgentEvaluators();
+  }, [loadAgentEvaluators]);
+
+  // After a test is created/updated, surface any evaluators it references that
+  // aren't yet attached to the agent, so the user can add them to the agent's
+  // defaults. Never removes evaluators (deletions on a test are ignored here).
+  // Returns true when the prompt is shown (caller should keep AddTestDialog open).
+  const maybePromptAgentDefaults = async (
+    evaluators: EvaluatorRefPayload[],
+  ): Promise<boolean> => {
+    if (!backendAccessToken || evaluators.length === 0) return false;
+    let attached = new Set(agentEvaluators.map((e) => e.uuid));
+    try {
+      const fresh = await fetchAgentEvaluators(agentUuid, backendAccessToken);
+      attached = new Set(fresh.map((e) => e.uuid));
+      setAgentEvaluators(fresh);
+    } catch {
+      // Fall back to the cached list when the refresh fails.
+    }
+    const newUuids = Array.from(
+      new Set(evaluators.map((e) => e.evaluator_uuid)),
+    ).filter((uuid) => !attached.has(uuid));
+    if (newUuids.length === 0) return false;
+    // Resolve names from a fresh library fetch so inline-created evaluators
+    // (not in our cached agent list) still show a friendly label.
+    let library: EvaluatorData[] = [];
+    try {
+      library = await fetchAllEvaluators(backendAccessToken);
+    } catch {
+      // Names are best-effort; fall back to a generic label below.
+    }
+    const nameByUuid = new Map(library.map((e) => [e.uuid, e.name]));
+    setAgentDefaultsPrompt(
+      newUuids.map((uuid) => ({
+        uuid,
+        name: nameByUuid.get(uuid) ?? "Evaluator",
+      })),
+    );
+    setAgentDefaultsError(null);
+    return true;
+  };
 
   // Fetch the user's full /tests library. Triggered from two places: when
   // the attach-existing dropdown opens, and when the agent's tests list
@@ -874,9 +956,14 @@ export function TestsTabContent({
         setIsCreating(false);
         return;
       }
-      setNewTestName("");
-      setValidationAttempted(false);
-      setCreateDialogOpen(false);
+      const prompted = usesEvaluators
+        ? await maybePromptAgentDefaults(evaluators)
+        : false;
+      if (!prompted) {
+        setNewTestName("");
+        setValidationAttempted(false);
+        closeTestDialogAfterSave();
+      }
     } catch (err) {
       reportError("Error creating test:", err);
       setCreateError(
@@ -898,6 +985,48 @@ export function TestsTabContent({
     setValidationAttempted(false);
     setCreateError(null);
     setNameConflictError(null);
+  };
+
+  const closeTestDialogAfterSave = () => {
+    setCreateDialogOpen(false);
+    resetTestDialog();
+  };
+
+  // Test is already saved when this prompt is shown. Declining (Not now / X)
+  // keeps the test but skips updating the agent's default evaluators.
+  const dismissAgentDefaultsPrompt = () => {
+    if (isAttachingDefaults) return;
+    setAgentDefaultsPrompt(null);
+    setAgentDefaultsError(null);
+    closeTestDialogAfterSave();
+  };
+
+  const confirmAddAgentDefaults = async () => {
+    if (!agentDefaultsPrompt || !backendAccessToken) return;
+    try {
+      setIsAttachingDefaults(true);
+      setAgentDefaultsError(null);
+      // Add-only, single call: the prompt already holds just the evaluators
+      // not yet on the agent; existing links are left intact.
+      await addEvaluatorsToAgent(
+        agentUuid,
+        agentDefaultsPrompt.map((ev) => ev.uuid),
+        backendAccessToken,
+      );
+      await loadAgentEvaluators();
+      setAgentDefaultsPrompt(null);
+      setAgentDefaultsError(null);
+      closeTestDialogAfterSave();
+    } catch (err) {
+      reportError("Error adding evaluators to agent defaults:", err);
+      setAgentDefaultsError(
+        err instanceof Error
+          ? err.message
+          : "Failed to update default evaluators",
+      );
+    } finally {
+      setIsAttachingDefaults(false);
+    }
   };
 
   // Fetch a test's details by UUID and open the dialog in edit mode.
@@ -1096,8 +1225,14 @@ export function TestsTabContent({
       }
 
       await fetchAgentTests();
-      setCreateDialogOpen(false);
-      resetTestDialog();
+      const prompted =
+        config.evaluation.type === "response" ||
+        config.evaluation.type === "conversation"
+          ? await maybePromptAgentDefaults(evaluators)
+          : false;
+      if (!prompted) {
+        closeTestDialogAfterSave();
+      }
     } catch (err) {
       reportError("Error updating test:", err);
       setCreateError(
@@ -1833,8 +1968,7 @@ export function TestsTabContent({
                 empty. On a fetch failure (`allTestsAttempted && !allTestsFetched`)
                 leave it visible — clicking it re-fetches via the
                 dropdown's own effect. */}
-            {(allTests.length > 0 ||
-              (allTestsAttempted && !allTestsFetched)) &&
+            {(allTests.length > 0 || (allTestsAttempted && !allTestsFetched)) &&
               renderAddTestControl()}
             {renderNewTestButtons()}
           </div>
@@ -1866,9 +2000,9 @@ export function TestsTabContent({
                 empty. On a fetch failure (`allTestsAttempted && !allTestsFetched`)
                 leave it visible — clicking it re-fetches via the
                 dropdown's own effect. */}
-            {(allTests.length > 0 ||
-              (allTestsAttempted && !allTestsFetched)) &&
-              renderAddTestControl()}
+                {(allTests.length > 0 ||
+                  (allTestsAttempted && !allTestsFetched)) &&
+                  renderAddTestControl()}
                 {renderNewTestButtons()}
               </div>
             </div>
@@ -1948,9 +2082,7 @@ export function TestsTabContent({
             {selectedTestUuids.size > 0 && (
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 mb-3 md:mb-4">
                 <span className="text-sm">
-                  <span className="font-medium">
-                    {selectedTestUuids.size}
-                  </span>{" "}
+                  <span className="font-medium">{selectedTestUuids.size}</span>{" "}
                   {selectedTestUuids.size === 1 ? "test" : "tests"} selected
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
@@ -2056,180 +2188,180 @@ export function TestsTabContent({
                       lists; the header is pinned to the top via `sticky` and
                       given an opaque background so rows don't show through. */}
                   <div className="overflow-y-auto max-h-[60vh]">
-                  {/* Table Header */}
-                  <div className="grid grid-cols-[40px_minmax(0,1fr)_120px_auto_auto_auto] gap-4 px-4 py-2 border-b border-border bg-background sticky top-0 z-10">
-                    <div className="flex items-center">
-                      <button
-                        type="button"
-                        onClick={toggleSelectAll}
-                        className="cursor-pointer"
-                        title="Select all"
-                      >
-                        <TestCheckbox
-                          checked={
-                            selectedTestUuids.size ===
-                              filteredAgentTests.length &&
-                            filteredAgentTests.length > 0
-                          }
-                          hoverBorder
-                        />
-                      </button>
-                    </div>
-                    <div className="text-sm font-medium text-muted-foreground">
-                      Name
-                    </div>
-                    <div className="text-sm font-medium text-muted-foreground">
-                      Type
-                    </div>
-                    <div className="w-8"></div>
-                    <div className="w-8"></div>
-                    <div className="w-8"></div>
-                  </div>
-                  {/* Table Body */}
-                  {filteredAgentTests.map((test) => (
-                    <div
-                      key={test.uuid}
-                      onClick={() => openEditTest(test.uuid)}
-                      className="grid grid-cols-[40px_minmax(0,1fr)_120px_auto_auto_auto] gap-4 px-4 py-2 border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors cursor-pointer items-center"
-                    >
-                      {/* Checkbox */}
+                    {/* Table Header */}
+                    <div className="grid grid-cols-[40px_minmax(0,1fr)_120px_auto_auto_auto] gap-4 px-4 py-2 border-b border-border bg-background sticky top-0 z-10">
                       <div className="flex items-center">
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleTestSelection(test.uuid);
-                          }}
+                          onClick={toggleSelectAll}
                           className="cursor-pointer"
-                          title="Select test"
+                          title="Select all"
                         >
                           <TestCheckbox
-                            checked={selectedTestUuids.has(test.uuid)}
+                            checked={
+                              selectedTestUuids.size ===
+                                filteredAgentTests.length &&
+                              filteredAgentTests.length > 0
+                            }
                             hoverBorder
                           />
                         </button>
                       </div>
-                      {/* Name Column */}
-                      <div className="flex items-center min-w-0">
-                        <span className="text-sm font-medium text-foreground overflow-x-auto whitespace-nowrap">
-                          {test.name}
-                        </span>
+                      <div className="text-sm font-medium text-muted-foreground">
+                        Name
                       </div>
-                      {/* Type Column with Icon */}
-                      <div className="flex items-center gap-2">
-                        {test.type === "tool_call" ? (
-                          <svg
-                            className="w-4 h-4 text-muted-foreground flex-shrink-0"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z"
-                            />
-                          </svg>
-                        ) : (
-                          <svg
-                            className="w-4 h-4 text-muted-foreground flex-shrink-0"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"
-                            />
-                          </svg>
-                        )}
-                        <span className="text-sm text-muted-foreground">
-                          {testTypeLabel(test.type)}
-                        </span>
+                      <div className="text-sm font-medium text-muted-foreground">
+                        Type
                       </div>
-                      {/* Run Button */}
-                      <div className="flex items-center">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setTestsToRun([test]);
-                            setRunAllLinked(false);
-                            setTestRunnerOpen(true);
-                          }}
-                          className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
-                          title="Run test"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                      {/* Duplicate Button — opens the create dialog pre-filled
-                          from this test; nothing is saved until submit. */}
-                      <div className="flex items-center">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openDuplicateTest(test);
-                          }}
-                          className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
-                          title="Duplicate test"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                      {/* Delete Button — opens a dialog whose checkbox upgrades the
-                          remove-from-agent action to a permanent library delete. */}
-                      <div className="flex items-center">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openDeleteDialog(test, "remove");
-                          }}
-                          className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
-                          title="Delete test"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
-                            />
-                          </svg>
-                        </button>
-                      </div>
+                      <div className="w-8"></div>
+                      <div className="w-8"></div>
+                      <div className="w-8"></div>
                     </div>
+                    {/* Table Body */}
+                    {filteredAgentTests.map((test) => (
+                      <div
+                        key={test.uuid}
+                        onClick={() => openEditTest(test.uuid)}
+                        className="grid grid-cols-[40px_minmax(0,1fr)_120px_auto_auto_auto] gap-4 px-4 py-2 border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors cursor-pointer items-center"
+                      >
+                        {/* Checkbox */}
+                        <div className="flex items-center">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleTestSelection(test.uuid);
+                            }}
+                            className="cursor-pointer"
+                            title="Select test"
+                          >
+                            <TestCheckbox
+                              checked={selectedTestUuids.has(test.uuid)}
+                              hoverBorder
+                            />
+                          </button>
+                        </div>
+                        {/* Name Column */}
+                        <div className="flex items-center min-w-0">
+                          <span className="text-sm font-medium text-foreground overflow-x-auto whitespace-nowrap">
+                            {test.name}
+                          </span>
+                        </div>
+                        {/* Type Column with Icon */}
+                        <div className="flex items-center gap-2">
+                          {test.type === "tool_call" ? (
+                            <svg
+                              className="w-4 h-4 text-muted-foreground flex-shrink-0"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={1.5}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z"
+                              />
+                            </svg>
+                          ) : (
+                            <svg
+                              className="w-4 h-4 text-muted-foreground flex-shrink-0"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={1.5}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"
+                              />
+                            </svg>
+                          )}
+                          <span className="text-sm text-muted-foreground">
+                            {testTypeLabel(test.type)}
+                          </span>
+                        </div>
+                        {/* Run Button */}
+                        <div className="flex items-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setTestsToRun([test]);
+                              setRunAllLinked(false);
+                              setTestRunnerOpen(true);
+                            }}
+                            className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+                            title="Run test"
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={1.5}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                        {/* Duplicate Button — opens the create dialog pre-filled
+                          from this test; nothing is saved until submit. */}
+                        <div className="flex items-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDuplicateTest(test);
+                            }}
+                            className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+                            title="Duplicate test"
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={1.5}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                        {/* Delete Button — opens a dialog whose checkbox upgrades the
+                          remove-from-agent action to a permanent library delete. */}
+                        <div className="flex items-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDeleteDialog(test, "remove");
+                            }}
+                            className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
+                            title="Delete test"
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={1.5}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -2428,6 +2560,20 @@ export function TestsTabContent({
           initialTab={initialTab}
           initialConfig={initialConfig}
           initialEvaluators={initialEvaluators}
+          agentEvaluatorUuids={agentEvaluators.map((e) => e.uuid)}
+          agentEvaluatorsPending={!agentEvaluatorsLoaded}
+        />
+      )}
+
+      {/* Shown on top of the still-open AddTestDialog after a successful save.
+          The test is already persisted; this only asks about agent defaults. */}
+      {agentDefaultsPrompt && agentDefaultsPrompt.length > 0 && (
+        <AgentDefaultsPromptDialog
+          evaluators={agentDefaultsPrompt}
+          isSaving={isAttachingDefaults}
+          error={agentDefaultsError}
+          onDismiss={dismissAgentDefaultsPrompt}
+          onConfirm={confirmAddAgentDefaults}
         />
       )}
 

@@ -728,6 +728,19 @@ type AddTestDialogProps = {
   initialConfig?: TestConfig;
   initialEvaluators?: AttachedEvaluatorInit[];
   /**
+   * UUIDs of the evaluators currently attached to this agent. Used to seed a
+   * NEW test's evaluators from the agent's connected evaluators (filtered to
+   * the tab's type: `llm` for next-reply, `conversation` for conversation).
+   * Ignored when editing.
+   */
+  agentEvaluatorUuids?: string[];
+  /**
+   * True while the parent is still loading `agentEvaluatorUuids`. When set, a
+   * new test's evaluator seeding waits for the list rather than seeding off an
+   * empty one. Callers with no agent context leave this unset.
+   */
+  agentEvaluatorsPending?: boolean;
+  /**
    * "test" (default) — original behaviour with Next reply / Tool invocation
    * tabs and "Test" labels.
    * "labelItem" — used by the human-alignment task page. Hides the tabs
@@ -767,6 +780,8 @@ export function AddTestDialog({
   initialTab,
   initialConfig,
   initialEvaluators,
+  agentEvaluatorUuids,
+  agentEvaluatorsPending,
   mode = "test",
   allowAgentLastMessage = false,
   requireAssistantLastMessage = false,
@@ -1120,6 +1135,13 @@ export function AddTestDialog({
   const [evaluatorsFetched, setEvaluatorsFetched] = useState(false);
   const [evaluatorPickerOpen, setEvaluatorPickerOpen] = useState(false);
   const [evaluatorPickerSearch, setEvaluatorPickerSearch] = useState("");
+  const [evaluatorPickerSelectedIds, setEvaluatorPickerSelectedIds] = useState<
+    Set<string>
+  >(new Set());
+  const [scrollToEvaluatorUuid, setScrollToEvaluatorUuid] = useState<
+    string | null
+  >(null);
+  const evaluatorsContainerRef = useRef<HTMLDivElement>(null);
 
   const [localValidationAttempted, setLocalValidationAttempted] =
     useState(false);
@@ -1377,6 +1399,47 @@ export function AddTestDialog({
     setPendingFocusId(null);
   }, [pendingFocusId, chatMessages]);
 
+  // After the user adds evaluator(s), scroll the evaluators list pane so the
+  // bottom-most new card is visible.
+  const scrollNewEvaluatorIntoView = useCallback(() => {
+    const container = evaluatorsContainerRef.current;
+    if (!container) return false;
+    container.scrollTop = container.scrollHeight;
+    return true;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!scrollToEvaluatorUuid) return;
+    if (
+      !attachedEvaluators.some(
+        (e) => e.evaluator_uuid === scrollToEvaluatorUuid,
+      )
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const attemptScroll = () => {
+      if (!cancelled) scrollNewEvaluatorIntoView();
+    };
+
+    attemptScroll();
+    const raf = requestAnimationFrame(attemptScroll);
+    const retry1 = window.setTimeout(attemptScroll, 100);
+    const retry2 = window.setTimeout(attemptScroll, 250);
+    const finish = window.setTimeout(() => {
+      if (!cancelled) setScrollToEvaluatorUuid(null);
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      window.clearTimeout(retry1);
+      window.clearTimeout(retry2);
+      window.clearTimeout(finish);
+    };
+  }, [scrollToEvaluatorUuid, attachedEvaluators, scrollNewEvaluatorIntoView]);
+
   // Stable ref callback for auto-resizing textareas on mount. Inline
   // ref callbacks re-run on every parent re-render (toggling unrelated
   // state like the add-message dropdown), which would reset every
@@ -1428,75 +1491,77 @@ export function AddTestDialog({
     fetchTools();
   }, [isOpen, backendAccessToken]);
 
-  // Fetch available LLM evaluators (defaults + user-owned) when dialog opens.
-  // Used both for the "Add evaluator" picker and to resolve the default
-  // correctness evaluator on initial population.
-  useEffect(() => {
-    const fetchLLMEvaluators = async () => {
-      if (!isOpen || !backendAccessToken) return;
-
-      try {
-        setEvaluatorsLoading(true);
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
-        if (!backendUrl) {
-          throw new Error("BACKEND_URL environment variable is not set");
-        }
-
-        const response = await fetch(
-          `${backendUrl}/evaluators?include_defaults=true`,
-          {
-            method: "GET",
-            headers: getDefaultHeaders(backendAccessToken),
-          },
-        );
-
-        if (response.status === 401) {
-          await signOut({ callbackUrl: "/login" });
-          return;
-        }
-
-        if (!response.ok) {
-          throw new Error("Failed to fetch evaluators");
-        }
-
-        const raw = unwrapList<{
-          uuid: string;
-          name: string;
-          description?: string;
-          slug: string | null;
-          owner_user_id: string | null;
-          evaluator_type?: string;
-          live_version?: { variables?: EvaluatorVariableDef[] | null } | null;
-        }>(await response.json());
-
-        const llm: LLMEvaluatorOption[] = raw
-          .filter(
-            (e) =>
-              e.evaluator_type === "llm" ||
-              e.evaluator_type === CONVERSATION_EVALUATOR_TYPE,
-          )
-          .map((e) => ({
-            uuid: e.uuid,
-            name: e.name,
-            description: e.description,
-            slug: e.slug,
-            owner_user_id: e.owner_user_id,
-            evaluator_type: e.evaluator_type,
-            variables: Array.isArray(e.live_version?.variables)
-              ? (e.live_version!.variables as EvaluatorVariableDef[])
-              : [],
-          }));
-        setAvailableLLMEvaluators(llm);
-      } catch (err) {
-        reportError("Error fetching evaluators:", err);
-      } finally {
-        setEvaluatorsLoading(false);
-        setEvaluatorsFetched(true);
+  // Fetch the selectable evaluator list (defaults + owned, filtered to the
+  // llm / conversation types the picker supports).
+  const loadLLMEvaluators = useCallback(async (): Promise<
+    LLMEvaluatorOption[]
+  > => {
+    if (!isOpen || !backendAccessToken) return [];
+    try {
+      setEvaluatorsLoading(true);
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+      if (!backendUrl) {
+        throw new Error("BACKEND_URL environment variable is not set");
       }
-    };
 
-    fetchLLMEvaluators();
+      const response = await fetch(
+        `${backendUrl}/evaluators?include_defaults=true`,
+        {
+          method: "GET",
+          headers: getDefaultHeaders(backendAccessToken),
+        },
+      );
+
+      if (response.status === 401) {
+        await signOut({ callbackUrl: "/login" });
+        return [];
+      }
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch evaluators");
+      }
+
+      const raw = unwrapList<{
+        uuid: string;
+        name: string;
+        description?: string;
+        slug: string | null;
+        owner_user_id: string | null;
+        evaluator_type?: string;
+        live_version?: { variables?: EvaluatorVariableDef[] | null } | null;
+      }>(await response.json());
+
+      const llm: LLMEvaluatorOption[] = raw
+        .filter(
+          (e) =>
+            e.evaluator_type === "llm" ||
+            e.evaluator_type === CONVERSATION_EVALUATOR_TYPE,
+        )
+        .map((e) => ({
+          uuid: e.uuid,
+          name: e.name,
+          description: e.description,
+          slug: e.slug,
+          owner_user_id: e.owner_user_id,
+          evaluator_type: e.evaluator_type,
+          variables: Array.isArray(e.live_version?.variables)
+            ? (e.live_version!.variables as EvaluatorVariableDef[])
+            : [],
+        }));
+      setAvailableLLMEvaluators(llm);
+      return llm;
+    } catch (err) {
+      reportError("Error fetching evaluators:", err);
+      return [];
+    } finally {
+      setEvaluatorsLoading(false);
+      setEvaluatorsFetched(true);
+    }
   }, [isOpen, backendAccessToken]);
+
+  useEffect(() => {
+    loadLLMEvaluators();
+  }, [loadLLMEvaluators]);
 
   // Build initial variable_values for a freshly-attached evaluator: prefer
   // explicit values, then variable defaults, then empty string.
@@ -1516,6 +1581,38 @@ export function AddTestDialog({
     }
     return values;
   };
+
+  // Default attached-evaluators for a NEW test on the given tab: the agent's
+  // connected evaluators of the matching type (`llm` for next-reply,
+  // `conversation` for the conversation tab), falling back to the seeded
+  // default-correctness evaluator on next-reply when the agent has none.
+  const buildDefaultAttachedForTab = useCallback(
+    (tab: TestTab): AttachedEvaluator[] => {
+      const wantedType =
+        tab === "conversation" ? CONVERSATION_EVALUATOR_TYPE : "llm";
+      const toAttached = (o: LLMEvaluatorOption): AttachedEvaluator => ({
+        evaluator_uuid: o.uuid,
+        name: o.name,
+        description: o.description,
+        slug: o.slug,
+        variables: o.variables,
+        variable_values: buildInitialVariableValues(o.variables),
+      });
+      const agentSet = new Set(agentEvaluatorUuids ?? []);
+      const agentMatches = availableLLMEvaluators.filter(
+        (o) => agentSet.has(o.uuid) && o.evaluator_type === wantedType,
+      );
+      if (agentMatches.length > 0) return agentMatches.map(toAttached);
+      if (tab === "next-reply") {
+        const correctness = availableLLMEvaluators.find(
+          (o) => o.slug === DEFAULT_NEXT_REPLY_EVALUATOR_SLUG,
+        );
+        if (correctness) return [toAttached(correctness)];
+      }
+      return [];
+    },
+    [agentEvaluatorUuids, availableLLMEvaluators],
+  );
 
   // Initialize attached evaluators once props + evaluator list have settled.
   // Three cases:
@@ -1579,20 +1676,23 @@ export function AddTestDialog({
       return;
     }
 
-    // New test (or edit with no usable initial state): auto-attach default
-    // correctness only on the next-reply tab. Tool-invocation tests are
-    // unchanged and don't carry evaluators today.
-    if (!isEditing && activeTab === "next-reply" && correctness) {
-      setAttachedEvaluators([
-        {
-          evaluator_uuid: correctness.uuid,
-          name: correctness.name,
-          description: correctness.description,
-          slug: correctness.slug,
-          variables: correctness.variables,
-          variable_values: buildInitialVariableValues(correctness.variables),
-        },
-      ]);
+    // New test seeding reads the agent's evaluator list. While the parent is
+    // still loading it (`agentEvaluatorsPending`), wait — don't mark
+    // initialized — so this effect re-runs once the list arrives rather than
+    // seeding off an empty list and locking in the wrong default. Callers with
+    // no agent context (standalone tests page, labelling) never set the flag,
+    // so they seed immediately as before.
+    if (!isEditing && isEvaluatorTab && agentEvaluatorsPending) {
+      return;
+    }
+
+    // New test (or edit with no usable initial state): seed the agent's
+    // connected evaluators of the matching type (falling back to the default
+    // correctness evaluator on next-reply). Tool-invocation tests aren't an
+    // evaluator tab and stay empty.
+    if (!isEditing && isEvaluatorTab) {
+      const seed = buildDefaultAttachedForTab(activeTab);
+      if (seed.length > 0) setAttachedEvaluators(seed);
       setAttachedEvaluatorsInitialized(true);
       return;
     }
@@ -1608,6 +1708,9 @@ export function AddTestDialog({
     isEditing,
     isLoading,
     activeTab,
+    isEvaluatorTab,
+    agentEvaluatorsPending,
+    buildDefaultAttachedForTab,
   ]);
 
   // Discard-guard baseline capture (paired with `baselineRef`).
@@ -1666,16 +1769,24 @@ export function AddTestDialog({
     if (prev === activeTab) return;
     if (isEditing) return;
     if (!isEvaluatorTab) return;
-    const wantedType =
-      activeTab === "conversation" ? CONVERSATION_EVALUATOR_TYPE : "llm";
-    setAttachedEvaluators((prevAttached) =>
-      prevAttached.filter(
-        (e) =>
-          availableLLMEvaluators.find((o) => o.uuid === e.evaluator_uuid)
-            ?.evaluator_type === wantedType,
-      ),
-    );
-  }, [activeTab, isEditing, isEvaluatorTab, availableLLMEvaluators]);
+    // Same guard as the initial seed: while the agent's evaluator list is
+    // still loading, don't re-seed off an empty list. The initial-seed effect
+    // fires for the current tab once the list arrives, so the switched-to tab
+    // still gets the right defaults.
+    if (agentEvaluatorsPending) return;
+    // The next-reply and conversation evaluator types are mutually exclusive,
+    // so nothing the user had for the old type carries over. Re-seed the
+    // agent's default evaluators for the newly selected type (this also drops
+    // the auto-seeded next-reply correctness evaluator when moving to the
+    // conversation tab, which the backend would otherwise reject).
+    setAttachedEvaluators(buildDefaultAttachedForTab(activeTab));
+  }, [
+    activeTab,
+    isEditing,
+    isEvaluatorTab,
+    agentEvaluatorsPending,
+    buildDefaultAttachedForTab,
+  ]);
 
   const updateEvaluatorVariableValue = (
     evaluatorUuid: string,
@@ -1703,24 +1814,65 @@ export function AddTestDialog({
   const closeEvaluatorPicker = () => {
     setEvaluatorPickerOpen(false);
     setEvaluatorPickerSearch("");
+    setEvaluatorPickerSelectedIds(new Set());
   };
 
-  const attachEvaluatorFromOption = (option: LLMEvaluatorOption) => {
+  const toggleEvaluatorPickerSelection = (uuid: string) => {
+    setEvaluatorPickerSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(uuid)) next.delete(uuid);
+      else next.add(uuid);
+      return next;
+    });
+  };
+
+  const attachEvaluatorsFromOptions = (options: LLMEvaluatorOption[]) => {
+    if (options.length === 0) return;
+    // Compute the newly-added ids synchronously from current state. Deriving
+    // the scroll target *inside* the setState updater and reading it back on
+    // the next line is unreliable — the updater runs after this function
+    // returns, so the target was often still null and the scroll never fired.
+    const existing = new Set(
+      attachedEvaluators.map((e) => e.evaluator_uuid),
+    );
+    const toAdd = options.filter((option) => !existing.has(option.uuid));
+    if (toAdd.length === 0) {
+      closeEvaluatorPicker();
+      return;
+    }
     setAttachedEvaluators((prev) => {
-      if (prev.some((e) => e.evaluator_uuid === option.uuid)) return prev;
-      return [
-        ...prev,
-        {
+      const prevExisting = new Set(prev.map((e) => e.evaluator_uuid));
+      const rows = toAdd
+        .filter((option) => !prevExisting.has(option.uuid))
+        .map((option) => ({
           evaluator_uuid: option.uuid,
           name: option.name,
           description: option.description,
           slug: option.slug,
           variables: option.variables,
           variable_values: buildInitialVariableValues(option.variables),
-        },
-      ];
+        }));
+      return [...prev, ...rows];
     });
+    setScrollToEvaluatorUuid(toAdd[toAdd.length - 1].uuid);
     closeEvaluatorPicker();
+  };
+
+  const getAvailablePickerEvaluators = (): LLMEvaluatorOption[] => {
+    const remaining = availableLLMEvaluators.filter(
+      (o) =>
+        !attachedEvaluators.some((a) => a.evaluator_uuid === o.uuid) &&
+        (activeTab === "conversation"
+          ? o.evaluator_type === CONVERSATION_EVALUATOR_TYPE
+          : o.evaluator_type === "llm"),
+    );
+    const query = evaluatorPickerSearch.trim().toLowerCase();
+    if (!query) return remaining;
+    return remaining.filter((o) => {
+      const name = o.name.toLowerCase();
+      const desc = (o.description ?? "").toLowerCase();
+      return name.includes(query) || desc.includes(query);
+    });
   };
 
   const addToolFromSelection = (tool: AvailableTool) => {
@@ -2869,7 +3021,7 @@ export function AddTestDialog({
           }`}
         >
           {/* Left Column - Form */}
-          <div className="w-full md:w-1/2 flex flex-col border-b md:border-b-0 md:border-r border-border">
+          <div className="w-full md:w-1/2 flex flex-col min-h-0 border-b md:border-b-0 md:border-r border-border">
             {/* Tabs — hidden in labelItem mode (always next-reply). When
               editing an existing test the type is fixed (the backend no
               longer allows changing a test's type), so we show only the
@@ -2908,7 +3060,13 @@ export function AddTestDialog({
               ))}
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto overflow-x-visible p-4 md:p-6">
+            <div
+              className={`flex-1 min-h-0 overflow-x-visible p-4 md:p-6 ${
+                isEvaluatorTab && !isLoading
+                  ? "flex flex-col overflow-hidden"
+                  : "overflow-y-auto"
+              }`}
+            >
               {isLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <svg
@@ -2932,9 +3090,9 @@ export function AddTestDialog({
                   </svg>
                 </div>
               ) : isEvaluatorTab ? (
-                <div className="space-y-6">
+                <div className="flex flex-col flex-1 min-h-0 gap-6">
                   {/* Name */}
-                  <div>
+                  <div className="shrink-0">
                     <label className="block text-base font-medium text-foreground mb-2">
                       {ItemNoun} name
                     </label>
@@ -2967,7 +3125,7 @@ export function AddTestDialog({
 
                   {/* Description (labelling items only) */}
                   {isLabelItem && setItemDescription && (
-                    <div>
+                    <div className="shrink-0">
                       <label className="block text-base font-medium text-foreground mb-2">
                         Description
                       </label>
@@ -2982,12 +3140,12 @@ export function AddTestDialog({
                   )}
 
                   {/* Evaluators (next-reply tab only) */}
-                  <div className="relative">
-                    <div className="flex items-center justify-between mb-2">
+                  <div className="relative flex flex-col flex-1 min-h-0 min-w-0">
+                    <div className="flex items-center justify-between mb-2 shrink-0">
                       <label className="text-base font-medium text-foreground">
                         Evaluators
                       </label>
-                      {!isLabelItem &&
+                      {!isLabelItem && (
                         (() => {
                           const remainingOptions =
                             availableLLMEvaluators.filter(
@@ -3000,18 +3158,22 @@ export function AddTestDialog({
                                     CONVERSATION_EVALUATOR_TYPE
                                   : o.evaluator_type === "llm"),
                             );
-                          const noOptionsLeft = remainingOptions.length === 0;
+                          const noOptionsLeft =
+                            remainingOptions.length === 0;
                           return (
                             <button
                               onClick={() => {
                                 if (evaluatorPickerOpen) {
                                   closeEvaluatorPicker();
                                 } else {
+                                  setEvaluatorPickerSelectedIds(new Set());
                                   setEvaluatorPickerOpen(true);
                                 }
                               }}
                               disabled={
-                                evaluatorsLoading || isLoading || noOptionsLeft
+                                evaluatorsLoading ||
+                                isLoading ||
+                                noOptionsLeft
                               }
                               // Tinted violet so the action stands out from
                               // the neutral form chrome around it. Validation
@@ -3027,7 +3189,8 @@ export function AddTestDialog({
                               Add evaluator
                             </button>
                           );
-                        })()}
+                        })()
+                      )}
                     </div>
 
                     {/* Evaluator picker dropdown */}
@@ -3037,7 +3200,7 @@ export function AddTestDialog({
                           className="fixed inset-0 z-[99]"
                           onClick={closeEvaluatorPicker}
                         />
-                        <div className="absolute right-0 top-9 mt-1 w-80 max-h-80 flex flex-col bg-background border border-border rounded-xl shadow-2xl z-[100] overflow-hidden">
+                        <div className="absolute right-0 top-9 mt-1 w-[26rem] max-w-[calc(100vw-2rem)] max-h-80 flex flex-col bg-background border border-border rounded-xl shadow-2xl z-[100] overflow-hidden">
                           {/* Sticky search bar */}
                           <div className="p-2 border-b border-border bg-background">
                             <input
@@ -3070,24 +3233,7 @@ export function AddTestDialog({
                                   </div>
                                 );
                               }
-                              // Case-insensitive substring match against both
-                              // name and description so users can search by
-                              // either label or rubric snippet.
-                              const query = evaluatorPickerSearch
-                                .trim()
-                                .toLowerCase();
-                              const matches = query
-                                ? remaining.filter((o) => {
-                                    const name = o.name.toLowerCase();
-                                    const desc = (
-                                      o.description ?? ""
-                                    ).toLowerCase();
-                                    return (
-                                      name.includes(query) ||
-                                      desc.includes(query)
-                                    );
-                                  })
-                                : remaining;
+                              const matches = getAvailablePickerEvaluators();
                               if (matches.length === 0) {
                                 return (
                                   <div className="px-4 py-6 text-sm text-muted-foreground text-center">
@@ -3102,43 +3248,77 @@ export function AddTestDialog({
                               const mine = matches.filter(
                                 (o) => o.owner_user_id !== null,
                               );
-                              const renderRow = (o: LLMEvaluatorOption) => (
-                                <button
-                                  key={o.uuid}
-                                  onClick={() => attachEvaluatorFromOption(o)}
-                                  className="w-full text-left px-4 py-2.5 hover:bg-muted transition-colors cursor-pointer"
-                                >
-                                  <div className="text-sm font-medium text-foreground">
-                                    {o.name}
-                                  </div>
-                                  {o.description && (
-                                    <div className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
-                                      {o.description}
+                              const showSections =
+                                defaults.length > 0 && mine.length > 0;
+                              const renderRow = (o: LLMEvaluatorOption) => {
+                                const checked = evaluatorPickerSelectedIds.has(
+                                  o.uuid,
+                                );
+                                return (
+                                  <label
+                                    key={o.uuid}
+                                    className="flex items-start gap-3 px-4 py-2.5 hover:bg-muted/30 transition-colors cursor-pointer"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() =>
+                                        toggleEvaluatorPickerSelection(o.uuid)
+                                      }
+                                      className="mt-0.5 w-4 h-4 cursor-pointer accent-foreground"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-sm font-medium text-foreground">
+                                        {o.name}
+                                      </div>
+                                      {o.description && (
+                                        <div className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                                          {o.description}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </label>
+                                );
+                              };
+                              const renderSection = (
+                                label: string,
+                                options: LLMEvaluatorOption[],
+                              ) => (
+                                <div>
+                                  {showSections && (
+                                    <div className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                      {label}
                                     </div>
                                   )}
-                                </button>
+                                  {options.map(renderRow)}
+                                </div>
                               );
                               return (
                                 <>
-                                  {defaults.length > 0 && (
-                                    <div>
-                                      <div className="px-4 pt-3 pb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                                        Default
-                                      </div>
-                                      {defaults.map(renderRow)}
-                                    </div>
-                                  )}
-                                  {mine.length > 0 && (
-                                    <div>
-                                      <div className="px-4 pt-3 pb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                                        My evaluators
-                                      </div>
-                                      {mine.map(renderRow)}
-                                    </div>
-                                  )}
+                                  {mine.length > 0 &&
+                                    renderSection("My evaluators", mine)}
+                                  {defaults.length > 0 &&
+                                    renderSection("Default", defaults)}
                                 </>
                               );
                             })()}
+                          </div>
+                          <div className="flex items-center justify-end gap-2 border-t border-border p-2 bg-background">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const selected = getAvailablePickerEvaluators().filter(
+                                  (o) => evaluatorPickerSelectedIds.has(o.uuid),
+                                );
+                                attachEvaluatorsFromOptions(selected);
+                              }}
+                              disabled={evaluatorPickerSelectedIds.size === 0}
+                              className="h-8 px-3 rounded-md text-sm font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {evaluatorPickerSelectedIds.size > 0
+                                ? `Add (${evaluatorPickerSelectedIds.size})`
+                                : "Add"}
+                            </button>
                           </div>
                         </div>
                       </>
@@ -3184,7 +3364,10 @@ export function AddTestDialog({
                     )}
 
                     {/* Attached evaluator cards */}
-                    <div className="space-y-4">
+                    <div
+                      ref={evaluatorsContainerRef}
+                      className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1"
+                    >
                       {attachedEvaluators.map((ev) => (
                         <div
                           key={ev.evaluator_uuid}
@@ -3674,7 +3857,7 @@ export function AddTestDialog({
           </div>
 
           {/* Right Column - Chat Messages */}
-          <div className="w-full md:w-1/2 flex flex-col bg-muted/30 overflow-visible">
+          <div className="w-full md:w-1/2 flex flex-col min-h-0 bg-muted/30 overflow-visible">
             {/* Info banner */}
             <div className="px-4 md:px-6 py-3 md:py-4 border-b border-border bg-blue-500/5">
               <div className="flex items-start gap-3">
@@ -3703,7 +3886,7 @@ export function AddTestDialog({
               </div>
             </div>
             {/* Chat Messages Area */}
-            <div className="flex-1 overflow-y-auto overflow-x-visible p-4 md:p-6">
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-visible p-4 md:p-6">
               {chatMessages.length === 0 ? (
                 /* Empty State Placeholder */
                 <div className="h-full flex flex-col items-center justify-center text-center px-8">
