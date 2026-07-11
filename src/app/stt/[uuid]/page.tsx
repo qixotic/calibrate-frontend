@@ -30,7 +30,6 @@ import { useSidebarState } from "@/lib/sidebar";
 import { getDataset } from "@/lib/datasets";
 import { ShareButton } from "@/components/ShareButton";
 import { ExportResultsButton, ExportColumn } from "@/components/ExportResultsButton";
-import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { retryEvaluation } from "@/lib/retryEvaluation";
 import {
   deriveEvaluatorColumns,
@@ -179,10 +178,7 @@ export default function STTEvaluationDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { errorCode, captureResponse } = usePageErrorState();
-  // Retry flow for failed runs: confirms with the user, then POSTs a new
-  // /stt/evaluate job using this run's dataset_id + providers + language +
-  // evaluator uuids, and redirects to the new task page.
-  const [retryConfirmOpen, setRetryConfirmOpen] = useState(false);
+  // Retry flow for failed runs.
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   // Persist the active tab across reloads via the `?tab=` query param.
@@ -204,27 +200,6 @@ export default function STTEvaluationDetailPage() {
     window.history.replaceState(null, "", `?${next.toString()}`);
   };
 
-  const handleRetry = async () => {
-    if (!evaluationResult || !backendAccessToken || retrying) return;
-    setRetrying(true);
-    setRetryError(null);
-    const result = await retryEvaluation(
-      "stt",
-      evaluationResult,
-      backendAccessToken,
-    );
-    if (result.ok) {
-      setRetryConfirmOpen(false);
-      router.push(`/stt/${result.taskId}`);
-      return;
-    }
-    if (result.status === 401) {
-      await signOut({ callbackUrl: "/login" });
-      return;
-    }
-    setRetryError(result.error);
-    setRetrying(false);
-  };
   const [activeProviderTab, setActiveProviderTab] = useState<string | null>(
     null,
   );
@@ -476,6 +451,96 @@ export default function STTEvaluationDetailPage() {
     }
   };
 
+  const restartEvaluationAfterRetry = async () => {
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+    if (!backendUrl || !backendAccessToken || !taskId) {
+      setRetrying(false);
+      return;
+    }
+
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+
+    setIsLoading(true);
+    setRetryError(null);
+    setError(null);
+    setActiveProviderTab(null);
+    handleTabChange("outputs");
+
+    try {
+      const response = await fetch(`${backendUrl}/stt/evaluate/${taskId}`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          Authorization: `Bearer ${backendAccessToken}`,
+        },
+      });
+
+      if (response.status === 401) {
+        await signOut({ callbackUrl: "/login" });
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch evaluation result");
+      }
+
+      const result: EvaluationResult = await response.json();
+
+      if (result.dataset_id) {
+        try {
+          await getDataset(backendAccessToken, result.dataset_id);
+        } catch {
+          result.dataset_id = null;
+          result.dataset_name = null;
+        }
+      }
+
+      setEvaluationResult(result);
+
+      if (result.provider_results && result.provider_results.length > 0) {
+        setActiveProviderTab(result.provider_results[0].provider);
+      }
+
+      if (
+        result.status !== "done" &&
+        result.status !== "failed" &&
+        !pollingIntervalRef.current
+      ) {
+        pollingIntervalRef.current = setInterval(() => {
+          pollTaskStatus(taskId, backendUrl);
+        }, POLLING_INTERVAL_MS);
+      }
+    } catch (err) {
+      reportError("Error refreshing evaluation after retry:", err);
+      setError(
+        err instanceof Error ? err.message : "Failed to load evaluation",
+      );
+    } finally {
+      setIsLoading(false);
+      setRetrying(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    if (!backendAccessToken || !taskId || retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    const result = await retryEvaluation("stt", taskId, backendAccessToken);
+    if (result.ok) {
+      await restartEvaluationAfterRetry();
+      return;
+    }
+    if (result.status === 401) {
+      await signOut({ callbackUrl: "/login" });
+      return;
+    }
+    setRetryError(result.error);
+    setRetrying(false);
+  };
+
   // The default STT evaluator drives the column / metric label for legacy
   // single-evaluator jobs when the job payload doesn't carry evaluator_runs.
   const defaultEvaluator: EvaluatorSummary | null =
@@ -683,10 +748,7 @@ export default function STTEvaluationDetailPage() {
                 backendAccessToken &&
                 evaluationResult.dataset_id && (
                   <button
-                    onClick={() => {
-                      setRetryError(null);
-                      setRetryConfirmOpen(true);
-                    }}
+                    onClick={handleRetry}
                     disabled={retrying}
                     title="Re-run this evaluation on the same dataset, providers, and evaluators"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium border border-border bg-background hover:bg-muted/60 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
@@ -697,27 +759,11 @@ export default function STTEvaluationDetailPage() {
                 )}
             </div>
 
-            <DeleteConfirmationDialog
-              isOpen={retryConfirmOpen}
-              onClose={() => {
-                if (!retrying) {
-                  setRetryConfirmOpen(false);
-                  setRetryError(null);
-                }
-              }}
-              onConfirm={handleRetry}
-              title="Retry evaluation"
-              message={`This will start a new STT evaluation on the same dataset (${evaluationResult.dataset_name ?? "—"}), providers, and evaluators as the failed run.`}
-              confirmText="Retry"
-              isDeleting={retrying}
-              extraContent={
-                retryError ? (
-                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
-                    {retryError}
-                  </div>
-                ) : null
-              }
-            />
+            {retryError && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+                {retryError}
+              </div>
+            )}
 
             {/* Only show tabs and content when we have at least one provider result */}
             {evaluationResult.provider_results &&

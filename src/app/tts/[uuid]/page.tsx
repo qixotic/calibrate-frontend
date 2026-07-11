@@ -31,7 +31,6 @@ import { getDataset } from "@/lib/datasets";
 import { ShareButton } from "@/components/ShareButton";
 import { ExportZipButton } from "@/components/ExportZipButton";
 import type { ExportColumn } from "@/components/ExportResultsButton";
-import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { retryEvaluation } from "@/lib/retryEvaluation";
 import {
   deriveEvaluatorColumns,
@@ -170,7 +169,6 @@ export default function TTSEvaluationDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const { errorCode, captureResponse } = usePageErrorState();
   // Retry flow for failed runs.
-  const [retryConfirmOpen, setRetryConfirmOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   // Persist the active tab across reloads via the `?tab=` query param.
@@ -192,27 +190,6 @@ export default function TTSEvaluationDetailPage() {
     window.history.replaceState(null, "", `?${next.toString()}`);
   };
 
-  const handleRetry = async () => {
-    if (!evaluationResult || !backendAccessToken || retrying) return;
-    setRetrying(true);
-    setRetryError(null);
-    const result = await retryEvaluation(
-      "tts",
-      evaluationResult,
-      backendAccessToken,
-    );
-    if (result.ok) {
-      setRetryConfirmOpen(false);
-      router.push(`/tts/${result.taskId}`);
-      return;
-    }
-    if (result.status === 401) {
-      await signOut({ callbackUrl: "/login" });
-      return;
-    }
-    setRetryError(result.error);
-    setRetrying(false);
-  };
   const [activeProviderTab, setActiveProviderTab] = useState<string | null>(
     null,
   );
@@ -465,6 +442,98 @@ export default function TTSEvaluationDetailPage() {
     }
   };
 
+  const restartEvaluationAfterRetry = async () => {
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+    if (!backendUrl || !backendAccessToken || !taskId) {
+      setRetrying(false);
+      return;
+    }
+
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+
+    setIsLoading(true);
+    setRetryError(null);
+    setError(null);
+    setActiveProviderTab(null);
+    handleTabChange("outputs");
+
+    try {
+      const response = await fetch(`${backendUrl}/tts/evaluate/${taskId}`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          Authorization: `Bearer ${backendAccessToken}`,
+        },
+      });
+
+      if (response.status === 401) {
+        await signOut({ callbackUrl: "/login" });
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch evaluation result");
+      }
+
+      const result: EvaluationResult = await response.json();
+
+      if (result.dataset_id) {
+        try {
+          await getDataset(backendAccessToken, result.dataset_id);
+        } catch {
+          result.dataset_id = null;
+          result.dataset_name = null;
+        }
+      }
+
+      setEvaluationResult(result);
+
+      if (result.provider_results && result.provider_results.length > 0) {
+        setActiveProviderTab(
+          (current) => current || result.provider_results![0].provider,
+        );
+      }
+
+      if (
+        result.status !== "done" &&
+        result.status !== "failed" &&
+        !pollingIntervalRef.current
+      ) {
+        pollingIntervalRef.current = setInterval(() => {
+          pollTaskStatus(taskId, backendUrl);
+        }, POLLING_INTERVAL_MS);
+      }
+    } catch (err) {
+      reportError("Error refreshing evaluation after retry:", err);
+      setError(
+        err instanceof Error ? err.message : "Failed to load evaluation",
+      );
+    } finally {
+      setIsLoading(false);
+      setRetrying(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    if (!backendAccessToken || !taskId || retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    const result = await retryEvaluation("tts", taskId, backendAccessToken);
+    if (result.ok) {
+      await restartEvaluationAfterRetry();
+      return;
+    }
+    if (result.status === 401) {
+      await signOut({ callbackUrl: "/login" });
+      return;
+    }
+    setRetryError(result.error);
+    setRetrying(false);
+  };
+
   // The default TTS evaluator drives the column / metric label for legacy
   // single-evaluator jobs when the job payload doesn't carry evaluator_runs.
   const defaultEvaluator: EvaluatorSummary | null =
@@ -706,10 +775,7 @@ export default function TTSEvaluationDetailPage() {
                 backendAccessToken &&
                 evaluationResult.dataset_id && (
                   <button
-                    onClick={() => {
-                      setRetryError(null);
-                      setRetryConfirmOpen(true);
-                    }}
+                    onClick={handleRetry}
                     disabled={retrying}
                     title="Re-run this evaluation on the same dataset, providers, and evaluators"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium border border-border bg-background hover:bg-muted/60 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
@@ -720,27 +786,11 @@ export default function TTSEvaluationDetailPage() {
                 )}
             </div>
 
-            <DeleteConfirmationDialog
-              isOpen={retryConfirmOpen}
-              onClose={() => {
-                if (!retrying) {
-                  setRetryConfirmOpen(false);
-                  setRetryError(null);
-                }
-              }}
-              onConfirm={handleRetry}
-              title="Retry evaluation"
-              message={`This will start a new TTS evaluation on the same dataset (${evaluationResult.dataset_name ?? "—"}), providers, and evaluators as the failed run.`}
-              confirmText="Retry"
-              isDeleting={retrying}
-              extraContent={
-                retryError ? (
-                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
-                    {retryError}
-                  </div>
-                ) : null
-              }
-            />
+            {retryError && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+                {retryError}
+              </div>
+            )}
 
             {/* Only show tabs and content when we have at least one provider result */}
             {evaluationResult.provider_results &&
