@@ -26,6 +26,16 @@ import {
   type STTEvaluatorColumn,
 } from "@/components/eval-details";
 import { readEvaluatorCell } from "@/components/eval-details/EvaluatorScoreCell";
+import {
+  AddRunToLabellingTaskDialog,
+  type SttLabellingRow,
+  type SourceEvaluatorRef,
+} from "@/components/human-labelling/AddRunToLabellingTaskDialog";
+import { useLabellingSelection } from "@/components/human-labelling/useLabellingSelection";
+import {
+  dedupeSourceEvaluators,
+  SubmitForLabellingButton,
+} from "@/components/human-labelling/labellingSubmit";
 import { useSidebarState } from "@/lib/sidebar";
 import { getDataset } from "@/lib/datasets";
 import { ShareButton } from "@/components/ShareButton";
@@ -566,6 +576,54 @@ export default function STTEvaluationDetailPage() {
     [aboutEvaluators, evaluationResult, defaultEvaluator, judgeLabel],
   );
 
+  // "Submit for labelling": pick individual result rows (per provider) and
+  // send them to an STT annotation task. Rows are keyed `${provider}:${index}`
+  // — the same keys `STTResultsTable` toggles — so selection is stable across
+  // provider switches. Only the SELECTED rows become items (reference vs.
+  // predicted transcript); names include provider + index + a run-id suffix so
+  // they stay unique within a task. Evaluators come from `evaluatorColumns`.
+  const [addToTaskOpen, setAddToTaskOpen] = useState(false);
+  const {
+    selected: sttLabellingSelected,
+    toggle: toggleSttLabelling,
+    bulkToggle: bulkToggleSttLabelling,
+  } = useLabellingSelection();
+  // Total rows eligible to be labelled (non-empty ground truth), used to
+  // decide whether to show the "Submit for labelling" button at all.
+  const sttLabellingEligibleCount = useMemo(() => {
+    let count = 0;
+    for (const pr of evaluationResult?.provider_results ?? []) {
+      for (const r of pr.results ?? []) {
+        if (r.gt && r.gt.trim() !== "") count += 1;
+      }
+    }
+    return count;
+  }, [evaluationResult]);
+  const sttLabellingRows: SttLabellingRow[] = useMemo(() => {
+    const rows: SttLabellingRow[] = [];
+    const suffix = taskId.slice(0, 8);
+    for (const pr of evaluationResult?.provider_results ?? []) {
+      const providerLabel = getProviderLabel(pr.provider);
+      (pr.results ?? []).forEach((r, i) => {
+        if (!r.gt || r.gt.trim() === "") return;
+        if (!sttLabellingSelected.has(`${pr.provider}:${i}`)) return;
+        rows.push({
+          name: `${providerLabel} #${i + 1} — ${suffix}`,
+          reference_transcript: r.gt,
+          predicted_transcript: r.pred ?? "",
+        });
+      });
+    }
+    return rows;
+  }, [evaluationResult, taskId, sttLabellingSelected]);
+  const sttLabellingEvaluators: SourceEvaluatorRef[] = useMemo(
+    () =>
+      dedupeSourceEvaluators(
+        evaluatorColumns.map((c) => ({ uuid: c.evaluatorUuid, name: c.label })),
+      ),
+    [evaluatorColumns],
+  );
+
   const canShowLeaderboard =
     evaluationResult?.status === "done" &&
     !!evaluationResult.leaderboard_summary;
@@ -744,6 +802,17 @@ export default function STTEvaluationDetailPage() {
                   initialShareToken={evaluationResult.share_token ?? null}
                 />
               )}
+              {/* Send the selected per-row transcripts to a human-alignment
+                  (STT) task for labelling. Tick rows in the Outputs table
+                  first. Desktop-only, matching TestRunnerDialog. */}
+              {evaluationResult.status === "done" &&
+                sttLabellingEligibleCount > 0 && (
+                  <SubmitForLabellingButton
+                    count={sttLabellingRows.length}
+                    emptyMessage="Select one or more rows to submit for labelling"
+                    onOpen={() => setAddToTaskOpen(true)}
+                  />
+                )}
               {evaluationResult.status === "failed" &&
                 backendAccessToken &&
                 evaluationResult.dataset_id && (
@@ -894,6 +963,21 @@ export default function STTEvaluationDetailPage() {
                       evaluatorColumns={evaluatorColumns}
                       getProviderLabel={getProviderLabel}
                       tableRef={tableContainerRef}
+                      labellingSelection={
+                        evaluationResult.status === "done"
+                          ? sttLabellingSelected
+                          : undefined
+                      }
+                      onToggleLabellingSelection={
+                        evaluationResult.status === "done"
+                          ? toggleSttLabelling
+                          : undefined
+                      }
+                      onLabellingBulkToggle={
+                        evaluationResult.status === "done"
+                          ? bulkToggleSttLabelling
+                          : undefined
+                      }
                     />
                   )}
                 </>
@@ -901,6 +985,18 @@ export default function STTEvaluationDetailPage() {
           </div>
         )}
       </div>
+
+      <AddRunToLabellingTaskDialog
+        isOpen={addToTaskOpen}
+        onClose={() => setAddToTaskOpen(false)}
+        source={{
+          type: "stt_run",
+          runUuid: taskId,
+          runName: evaluationResult?.dataset_name ?? undefined,
+          rows: sttLabellingRows,
+          evaluators: sttLabellingEvaluators,
+        }}
+      />
     </AppLayout>
   );
 }

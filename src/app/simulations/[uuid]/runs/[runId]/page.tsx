@@ -20,6 +20,17 @@ import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { useSidebarState } from "@/lib/sidebar";
 import { getVoiceSimulationAudioLayout, getVoiceSimulationAudioUrlForEntry } from "@/lib/simulationVoiceAudio";
 import { ShareButton } from "@/components/ShareButton";
+import { LabellingRowCheckbox } from "@/components/test-results/shared";
+import {
+  AddRunToLabellingTaskDialog,
+  type ConversationLabellingResult,
+  type SourceEvaluatorRef,
+} from "@/components/human-labelling/AddRunToLabellingTaskDialog";
+import { useLabellingSelection } from "@/components/human-labelling/useLabellingSelection";
+import {
+  dedupeSourceEvaluators,
+  SubmitForLabellingButton,
+} from "@/components/human-labelling/labellingSubmit";
 
 // `type`, `scale_min`, `scale_max` are present on newer runs (per the
 // evaluator migration). Older runs only carry `mean`/`std`/`values` — we
@@ -126,6 +137,7 @@ export default function SimulationRunPage() {
   const { errorCode, captureResponse } = usePageErrorState();
   const [isAborting, setIsAborting] = useState(false);
   const [transcriptDialogOpen, setTranscriptDialogOpen] = useState(false);
+  const [addToTaskOpen, setAddToTaskOpen] = useState(false);
 
   // Hide the floating "Talk to Us" button when the transcript dialog is open
   useHideFloatingButton(transcriptDialogOpen);
@@ -442,6 +454,70 @@ export default function SimulationRunPage() {
     }
     return map;
   }, [runData, simulationEvaluatorUuidByName]);
+
+  // "Submit for labelling": pick individual simulations and send each one's
+  // transcript to a conversation annotation task. Rows are keyed by their
+  // ORIGINAL index in `simulation_results` (stable regardless of the table's
+  // display sort). A simulation is eligible when it isn't aborted and has at
+  // least one non-`end_reason` transcript turn.
+  const {
+    selected: simLabellingSelected,
+    toggle: toggleSimLabelling,
+    bulkToggle: bulkToggleSimLabelling,
+  } = useLabellingSelection();
+  const simLabellingKeyByRef = useMemo(() => {
+    const m = new Map<SimulationResult, string>();
+    (runData?.simulation_results ?? []).forEach((s, i) => m.set(s, String(i)));
+    return m;
+  }, [runData]);
+  const isSimLabellingEligible = useCallback((sim: SimulationResult) => {
+    if (sim.aborted) return false;
+    return (sim.transcript ?? []).some((t) => t.role !== "end_reason");
+  }, []);
+  const simLabellingKey = useCallback(
+    (sim: SimulationResult) => simLabellingKeyByRef.get(sim) ?? "",
+    [simLabellingKeyByRef],
+  );
+  const eligibleSimKeys = useMemo(
+    () =>
+      (runData?.simulation_results ?? [])
+        .filter(isSimLabellingEligible)
+        .map((s) => simLabellingKey(s)),
+    [runData, isSimLabellingEligible, simLabellingKey],
+  );
+  const conversationLabellingResults: ConversationLabellingResult[] = useMemo(() => {
+    const out: ConversationLabellingResult[] = [];
+    const suffix = runId.slice(0, 8);
+    for (const sim of runData?.simulation_results ?? []) {
+      if (!isSimLabellingEligible(sim)) continue;
+      if (!simLabellingSelected.has(simLabellingKey(sim))) continue;
+      const transcript = (sim.transcript ?? []).filter(
+        (t) => t.role !== "end_reason",
+      );
+      const baseName =
+        sim.simulation_name ||
+        [sim.persona?.label, sim.scenario?.name].filter(Boolean).join(" / ") ||
+        "Simulation";
+      out.push({ name: `${baseName} — ${suffix}`, transcript });
+    }
+    return out;
+  }, [
+    runData,
+    runId,
+    simLabellingSelected,
+    isSimLabellingEligible,
+    simLabellingKey,
+  ]);
+  const conversationLabellingEvaluators: SourceEvaluatorRef[] = useMemo(
+    () =>
+      dedupeSourceEvaluators(
+        Object.entries(evaluatorUuidByName).map(([name, uuid]) => ({
+          uuid,
+          name,
+        })),
+      ),
+    [evaluatorUuidByName],
+  );
 
   const evaluatorDescriptionByName = useMemo(() => {
     const map: Record<string, string> = {};
@@ -791,6 +867,19 @@ export default function SimulationRunPage() {
                   initialShareToken={runData.share_token ?? null}
                 />
               )}
+              {/* Send the selected simulation transcripts to a
+                  human-alignment (conversation) task for labelling. Tick rows
+                  in the results table first. Desktop-only, matching
+                  TestRunnerDialog. */}
+              {runData.status.toLowerCase() === "done" &&
+                eligibleSimKeys.length > 0 && (
+                  <SubmitForLabellingButton
+                    count={conversationLabellingResults.length}
+                    emptyMessage="Select one or more simulations to submit for labelling"
+                    onOpen={() => setAddToTaskOpen(true)}
+                    className="hidden md:inline-flex items-center gap-2 h-8 px-3 rounded-md text-xs font-medium border cursor-pointer transition-colors bg-rose-500/14 border-rose-500/45 text-rose-950 dark:text-rose-100 hover:bg-rose-500/26 dark:hover:bg-rose-500/20"
+                  />
+                )}
               {(runData.status.toLowerCase() === "in_progress" ||
                 runData.status.toLowerCase() === "queued") && (
                 <button
@@ -1145,6 +1234,13 @@ export default function SimulationRunPage() {
                   displayMetricKeys = Array.from(metricSet);
                 }
 
+                const showSimCheckboxes =
+                  runData.status.toLowerCase() === "done" &&
+                  eligibleSimKeys.length > 0;
+                const simAllSelected =
+                  eligibleSimKeys.length > 0 &&
+                  eligibleSimKeys.every((k) => simLabellingSelected.has(k));
+
                 return (
                   <>
                     <div className="flex items-baseline gap-3 mb-3 md:mb-4">
@@ -1163,6 +1259,31 @@ export default function SimulationRunPage() {
                         <table className="w-full table-fixed">
                           <thead className="bg-background border-t border-border">
                             <tr>
+                              {showSimCheckboxes && (
+                                <th className="w-10 px-2 py-3 text-left">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      bulkToggleSimLabelling(eligibleSimKeys)
+                                    }
+                                    title={
+                                      simAllSelected
+                                        ? "Deselect all"
+                                        : "Select all"
+                                    }
+                                    aria-label={
+                                      simAllSelected
+                                        ? "Deselect all"
+                                        : "Select all"
+                                    }
+                                    className="cursor-pointer"
+                                  >
+                                    <LabellingRowCheckbox
+                                      checked={simAllSelected}
+                                    />
+                                  </button>
+                                </th>
+                              )}
                               <th className="w-10 px-2 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"></th>
                               <th className="w-44 px-3 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                                 Persona
@@ -1216,11 +1337,41 @@ export default function SimulationRunPage() {
                                   isSimulationProcessing(simulation);
                                 const isWaiting =
                                   isSimulationWaiting(simulation);
+                                const simEligible =
+                                  isSimLabellingEligible(simulation);
+                                const simKey = simLabellingKey(simulation);
                                 return (
                                   <tr
                                     key={index}
                                     className="hover:bg-muted/30 transition-colors"
                                   >
+                                    {showSimCheckboxes && (
+                                      <td className="px-2 py-4 whitespace-nowrap">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            simEligible &&
+                                            toggleSimLabelling(simKey)
+                                          }
+                                          disabled={!simEligible}
+                                          title={
+                                            simEligible
+                                              ? "Select for labelling"
+                                              : "Aborted or empty runs can't be labelled"
+                                          }
+                                          aria-label="Select for labelling"
+                                          className="cursor-pointer disabled:cursor-not-allowed"
+                                        >
+                                          <LabellingRowCheckbox
+                                            checked={
+                                              simLabellingSelected.has(simKey) &&
+                                              simEligible
+                                            }
+                                            disabled={!simEligible}
+                                          />
+                                        </button>
+                                      </td>
+                                    )}
                                     <td className="px-4 py-4 whitespace-nowrap">
                                       <div className="relative w-6 h-6 flex items-center justify-center">
                                         {/* Spinner ring around the play button */}
@@ -1466,6 +1617,10 @@ export default function SimulationRunPage() {
                               className="border border-border rounded-xl overflow-hidden bg-background"
                             >
                               <div className="p-5">
+                                {/* Labelling checkboxes are desktop-only — the
+                                    "Submit for labelling" button is hidden on
+                                    mobile, so selecting here would be a dead
+                                    end. */}
                                 {/* Persona and Scenario with Labels */}
                                 <div className="space-y-3 mb-4 pb-4 border-b border-border/50">
                                   <div>
@@ -2089,6 +2244,18 @@ export default function SimulationRunPage() {
           </div>
         </div>
       )}
+
+      <AddRunToLabellingTaskDialog
+        isOpen={addToTaskOpen}
+        onClose={() => setAddToTaskOpen(false)}
+        source={{
+          type: "simulation_run",
+          runUuid: runId,
+          runName: runData?.name,
+          results: conversationLabellingResults,
+          evaluators: conversationLabellingEvaluators,
+        }}
+      />
     </AppLayout>
   );
 }
