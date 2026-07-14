@@ -20,9 +20,9 @@ jest.mock("../bulk-upload-shared", () => ({
     if (detail.code === "ITEM_NAME_CONFLICT") {
       return fmt
         ? names.length === 1
-          ? `An item named ${fmt} already exists in this task.`
-          : `Items with these names already exist in this task: ${fmt}.`
-        : "One or more item names already exist in this task.";
+          ? `An item named ${fmt} already exists in this task`
+          : `Items with these names already exist in this task: ${fmt}`
+        : "One or more item names already exist in this task";
     }
     return null;
   },
@@ -44,6 +44,22 @@ function renderDialog(
   return { onClose, onSubmit, ...utils };
 }
 
+async function fillRow(
+  user: ReturnType<typeof setupUser>,
+  index: number,
+  { name, actual, pred }: { name: string; actual: string; pred: string },
+) {
+  await user.type(screen.getAllByPlaceholderText("e.g. Clip 1")[index], name);
+  await user.type(
+    screen.getAllByPlaceholderText("What was actually said")[index],
+    actual,
+  );
+  await user.type(
+    screen.getAllByPlaceholderText("What the system transcribed")[index],
+    pred,
+  );
+}
+
 describe("AddSttItemsDialog", () => {
   it("renders nothing when closed", () => {
     render(
@@ -63,35 +79,141 @@ describe("AddSttItemsDialog", () => {
     expect(screen.getByPlaceholderText("e.g. Clip 1")).toBeInTheDocument();
   });
 
-  it("keeps Add disabled until all fields in a row are filled", async () => {
+  it("disables 'Add another item' until the current item is complete", async () => {
     const user = setupUser();
     renderDialog();
-    const addButton = screen.getByRole("button", { name: "Add item" });
-    expect(addButton).toBeDisabled();
+    const addAnother = screen.getByRole("button", {
+      name: "Add another item",
+    });
+    expect(addAnother).toBeDisabled();
 
     await user.type(screen.getByPlaceholderText("e.g. Clip 1"), "Clip 1");
-    expect(addButton).toBeDisabled();
-
+    expect(addAnother).toBeDisabled();
     await user.type(
       screen.getByPlaceholderText("What was actually said"),
       "hello",
     );
-    expect(addButton).toBeDisabled();
-
+    expect(addAnother).toBeDisabled();
     await user.type(
       screen.getByPlaceholderText("What the system transcribed"),
       "helo",
     );
-    expect(addButton).not.toBeDisabled();
+    expect(addAnother).not.toBeDisabled();
   });
 
-  it("is a single-item form: no add-another or remove controls", () => {
+  it("shows field validation errors when submitting with empty fields", async () => {
+    const user = setupUser();
+    const onSubmit = jest.fn();
+    renderDialog({ onSubmit });
+    // The submit button is clickable even when empty — it reveals errors.
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByText("Name is required")).toBeInTheDocument();
+    expect(
+      screen.getByText("Reference transcript is required"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Predicted transcript is required"),
+    ).toBeInTheDocument();
+  });
+
+  it("scrolls the first invalid field into view on failed submit", async () => {
+    const user = setupUser();
+    const scrollIntoView = jest.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      renderDialog();
+      await user.click(screen.getByRole("button", { name: "Add item" }));
+      expect(screen.getByText("Name is required")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(scrollIntoView).toHaveBeenCalledWith(
+          expect.objectContaining({
+            behavior: "smooth",
+            block: "nearest",
+          }),
+        ),
+      );
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("clears prior validation errors when a new card is added", async () => {
+    const user = setupUser();
+    renderDialog();
+    // Trigger validation on the empty first card.
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    expect(screen.getByText("Name is required")).toBeInTheDocument();
+    // Fill it, then add another — the fresh card must start clean.
+    await fillRow(user, 0, { name: "Clip 1", actual: "a", pred: "p" });
+    await user.click(screen.getByRole("button", { name: "Add another item" }));
+    expect(screen.queryByText("Name is required")).not.toBeInTheDocument();
+  });
+
+  it("starts with a single card and can add / remove more", async () => {
+    const user = setupUser();
     renderDialog();
     expect(screen.getAllByPlaceholderText("e.g. Clip 1")).toHaveLength(1);
+    // Sole card's remove control is disabled.
+    expect(screen.getByLabelText("Remove item 1")).toBeDisabled();
+
+    await fillRow(user, 0, { name: "Clip 1", actual: "a", pred: "p" });
+    await user.click(screen.getByRole("button", { name: "Add another item" }));
+    expect(screen.getAllByPlaceholderText("e.g. Clip 1")).toHaveLength(2);
+
+    await user.click(screen.getAllByLabelText(/Remove item/)[1]);
+    expect(screen.getAllByPlaceholderText("e.g. Clip 1")).toHaveLength(1);
+  });
+
+  it("scrolls the new card into view when adding another item", async () => {
+    const user = setupUser();
+    const scrollTo = jest.fn();
+    // jsdom doesn't implement scrollTo; the dialog guards on its presence.
+    (
+      HTMLElement.prototype as unknown as { scrollTo: unknown }
+    ).scrollTo = scrollTo;
+    try {
+      renderDialog();
+      await fillRow(user, 0, { name: "Clip 1", actual: "a", pred: "p" });
+      await user.click(screen.getByRole("button", { name: "Add another item" }));
+      expect(scrollTo).toHaveBeenCalled();
+      expect(scrollTo.mock.calls[0][0]).toMatchObject({ behavior: "smooth" });
+    } finally {
+      delete (HTMLElement.prototype as unknown as { scrollTo?: unknown })
+        .scrollTo;
+    }
+  });
+
+  it("submits multiple filled cards with an 'Add N items' label", async () => {
+    const user = setupUser();
+    const onSubmit = jest.fn().mockResolvedValue(undefined);
+    renderDialog({ onSubmit });
+    await fillRow(user, 0, { name: "Clip 1", actual: "a", pred: "p" });
+    await user.click(screen.getByRole("button", { name: "Add another item" }));
+    await fillRow(user, 1, { name: "Clip 2", actual: "a", pred: "p" });
+
+    await user.click(screen.getByRole("button", { name: "Add 2 items" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0]).toHaveLength(2);
+  });
+
+  it("shows a name-conflict error under the offending row", async () => {
+    const user = setupUser();
+    const onSubmit = jest
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'Request failed: 409 - {"detail":{"code":"ITEM_NAME_CONFLICT","conflicting_names":["Clip 1"]}}',
+        ),
+      );
+    renderDialog({ onSubmit });
+    await fillRow(user, 0, { name: "Clip 1", actual: "a", pred: "p" });
+    await user.click(screen.getByRole("button", { name: "Add item" }));
     expect(
-      screen.queryByRole("button", { name: "Add another item" }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Remove item/)).not.toBeInTheDocument();
+      await screen.findByText(
+        'An item named "Clip 1" already exists in this task',
+      ),
+    ).toBeInTheDocument();
   });
 
   it("submits the single filled row, trimmed", async () => {
@@ -122,7 +244,7 @@ describe("AddSttItemsDialog", () => {
     ]);
   });
 
-  it("shows an inline error parsed from a structured detail object", async () => {
+  it("shows a name-conflict error under the Name field", async () => {
     const user = setupUser();
     const onSubmit = jest
       .fn()
@@ -144,11 +266,14 @@ describe("AddSttItemsDialog", () => {
     );
     await user.click(screen.getByRole("button", { name: "Add item" }));
 
-    expect(
-      await screen.findByText(
-        'An item named "Clip 1" already exists in this task.',
-      ),
-    ).toBeInTheDocument();
+    const msg = await screen.findByText(
+      'An item named "Clip 1" already exists in this task',
+    );
+    expect(msg.tagName).toBe("P");
+    expect(msg).toHaveClass("text-sm", "text-red-500");
+    expect(screen.getByPlaceholderText("e.g. Clip 1")).toHaveClass(
+      "border-red-500",
+    );
   });
 
   it("shows the raw detail string when the error body isn't a structured object", async () => {

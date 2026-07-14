@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useHideFloatingButton } from "@/components/AppLayout";
+import { FieldError } from "@/components/ui/FieldError";
 import { humaniseDetailObject } from "./bulk-upload-shared";
+import {
+  parseItemNameConflictFromError,
+  rowNameErrorsFromConflict,
+} from "./itemNameConflict";
+import { scheduleScrollToFirstFieldError } from "./scrollToFieldError";
 import {
   DiscardChangesDialog,
   useUnsavedCloseGuard,
@@ -88,6 +94,17 @@ export function AddSttItemsDialog({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // API name conflicts (ITEM_NAME_*), keyed by row id — shown under Name.
+  const [nameErrors, setNameErrors] = useState<Record<string, string>>({});
+  // Flips true after a submit attempt with incomplete rows, revealing the
+  // per-field validation errors.
+  const [validationAttempted, setValidationAttempted] = useState(false);
+  // Bumped when we surface field errors so we can scroll to the first one.
+  const [errorScrollTick, setErrorScrollTick] = useState(0);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  // Set when "Add another item" appends a card, so the effect below scrolls
+  // it into view once it has rendered.
+  const pendingScrollRef = useRef(false);
 
   // Reset rows whenever the dialog opens (so a fresh edit starts from the
   // latest selected items, and a reopened add starts blank).
@@ -105,8 +122,29 @@ export function AddSttItemsDialog({
           : [newRow()],
       );
       setError(null);
+      setNameErrors({});
+      setValidationAttempted(false);
+      setErrorScrollTick(0);
     }
   }, [isOpen, initialRows]);
+
+  // After a card is appended, scroll the container to the bottom so the new
+  // card is visible. Guarded for jsdom, which lacks a real scrollTo.
+  useEffect(() => {
+    if (!pendingScrollRef.current) return;
+    pendingScrollRef.current = false;
+    const el = scrollContainerRef.current;
+    if (el && typeof el.scrollTo === "function") {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  }, [rows.length]);
+
+  // After a failed submit (or blocked "add another"), scroll the first
+  // invalid field into view if it isn't already visible.
+  useEffect(() => {
+    if (errorScrollTick === 0) return;
+    return scheduleScrollToFirstFieldError(scrollContainerRef.current);
+  }, [errorScrollTick]);
 
   // Unsaved-changes check. Add mode: any field has content. Edit mode: any
   // field differs from the item it was seeded with (rows align 1:1 with
@@ -131,13 +169,47 @@ export function AddSttItemsDialog({
     isEdit,
     submitting,
     onClose,
-    onBeforeClose: () => setError(null),
+    onBeforeClose: () => {
+      setError(null);
+      setNameErrors({});
+    },
   });
 
   if (!isOpen) return null;
 
   const updateRow = (id: string, patch: Partial<SttRowDraft>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    if (patch.name !== undefined && nameErrors[id]) {
+      setNameErrors((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    }
+  };
+
+  const removeRow = (id: string) => {
+    setRows((prev) =>
+      prev.length === 1 ? prev : prev.filter((r) => r.id !== id),
+    );
+  };
+
+  const isRowComplete = (r: SttRowDraft) =>
+    !!r.name.trim() && !!r.actual.trim() && !!r.predicted.trim();
+  const allComplete = rows.every(isRowComplete);
+
+  const addRow = () => {
+    // Don't append a fresh blank card until the existing ones are complete.
+    if (!allComplete) {
+      setValidationAttempted(true);
+      setErrorScrollTick((n) => n + 1);
+      return;
+    }
+    // The freshly appended card starts clean — validation only re-triggers on
+    // the next submit, not carried over from an earlier failed submit.
+    setValidationAttempted(false);
+    pendingScrollRef.current = true;
+    setRows((prev) => [...prev, newRow()]);
   };
 
   const validRows: SttItemRowSubmission[] = rows
@@ -150,18 +222,36 @@ export function AddSttItemsDialog({
     .filter((r) => r.name && r.actual_transcript && r.predicted_transcript);
 
   const handleSubmit = async () => {
-    if (validRows.length === 0 || submitting) return;
+    if (submitting) return;
+    // Surface per-field errors instead of silently dropping incomplete rows.
+    if (!allComplete) {
+      setValidationAttempted(true);
+      setErrorScrollTick((n) => n + 1);
+      return;
+    }
     setSubmitting(true);
     setError(null);
+    setNameErrors({});
     try {
       await onSubmit(validRows);
     } catch (err) {
-      setError(
-        extractApiError(
-          err,
-          isEdit ? "Failed to save items" : "Failed to add items",
-        ),
-      );
+      const conflict = parseItemNameConflictFromError(err);
+      if (conflict) {
+        const byRow = rowNameErrorsFromConflict(rows, conflict);
+        if (Object.keys(byRow).length > 0) {
+          setNameErrors(byRow);
+          setErrorScrollTick((n) => n + 1);
+        } else {
+          setError(conflict.message);
+        }
+      } else {
+        setError(
+          extractApiError(
+            err,
+            isEdit ? "Failed to save items" : "Failed to add items",
+          ),
+        );
+      }
     } finally {
       setSubmitting(false);
     }
@@ -205,64 +295,143 @@ export function AddSttItemsDialog({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-2">
-          {/* Name / Reference / Predicted stacked vertically, one field per
-              row, so long transcripts (incl. non-latin scripts) are fully
-              readable. Edit mode may seed multiple items; add mode is always a
-              single item. */}
-          {rows.map((row, idx) => (
-            <div
-              key={row.id}
-              className={`space-y-3 ${idx > 0 ? "pt-4 mt-4 border-t border-border" : ""}`}
-            >
-              {rows.length > 1 && (
-                <div className="text-xs font-semibold text-muted-foreground">
-                  Item {idx + 1}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4"
+        >
+          {/* One card per item, fields stacked vertically so long transcripts
+              (incl. non-latin scripts) are fully readable. Add mode can add /
+              remove cards; edit mode seeds a fixed set from the selection. */}
+          {rows.map((row, idx) => {
+            const nameMissing = validationAttempted && !row.name.trim();
+            const nameConflict = nameErrors[row.id];
+            const nameInvalid = nameMissing || !!nameConflict;
+            const actualMissing = validationAttempted && !row.actual.trim();
+            const predictedMissing =
+              validationAttempted && !row.predicted.trim();
+            const inputBase =
+              "w-full px-3 rounded-md text-sm border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50";
+            return (
+              <div
+                key={row.id}
+                className="border border-border rounded-xl bg-muted/50 p-5 space-y-4"
+              >
+                {(!isEdit || rows.length > 1) && (
+                  <div className="flex items-center justify-between border-b border-border pb-3">
+                    <h3 className="text-sm font-semibold text-foreground">
+                      Item {idx + 1}
+                    </h3>
+                    {!isEdit && (
+                      <button
+                        onClick={() => removeRow(row.id)}
+                        disabled={rows.length === 1 || submitting}
+                        className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                        aria-label={`Remove item ${idx + 1}`}
+                        title="Remove this item"
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M6 18L18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={row.name}
+                    onChange={(e) => updateRow(row.id, { name: e.target.value })}
+                    placeholder="e.g. Clip 1"
+                    disabled={submitting}
+                    className={`${inputBase} h-9 ${nameInvalid ? "border-red-500 ring-1 ring-red-500/30" : "border-border"}`}
+                  />
+                  <FieldError show={nameMissing}>Name is required</FieldError>
+                  <FieldError show={!!nameConflict && !nameMissing}>
+                    {nameConflict}
+                  </FieldError>
                 </div>
-              )}
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  Name
-                </label>
-                <input
-                  type="text"
-                  value={row.name}
-                  onChange={(e) => updateRow(row.id, { name: e.target.value })}
-                  placeholder="e.g. Clip 1"
-                  disabled={submitting}
-                  className="w-full h-9 px-3 rounded-md text-sm border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
-                />
+                <div className="space-y-1">
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Reference transcript{" "}
+                    <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={row.actual}
+                    onChange={(e) =>
+                      updateRow(row.id, { actual: e.target.value })
+                    }
+                    placeholder="What was actually said"
+                    rows={3}
+                    disabled={submitting}
+                    className={`${inputBase} py-2 resize-y ${actualMissing ? "border-red-500 ring-1 ring-red-500/30" : "border-border"}`}
+                  />
+                  <FieldError show={actualMissing}>
+                    Reference transcript is required
+                  </FieldError>
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Predicted transcript{" "}
+                    <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={row.predicted}
+                    onChange={(e) =>
+                      updateRow(row.id, { predicted: e.target.value })
+                    }
+                    placeholder="What the system transcribed"
+                    rows={3}
+                    disabled={submitting}
+                    className={`${inputBase} py-2 resize-y ${predictedMissing ? "border-red-500 ring-1 ring-red-500/30" : "border-border"}`}
+                  />
+                  <FieldError show={predictedMissing}>
+                    Predicted transcript is required
+                  </FieldError>
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  Reference transcript
-                </label>
-                <textarea
-                  value={row.actual}
-                  onChange={(e) => updateRow(row.id, { actual: e.target.value })}
-                  placeholder="What was actually said"
-                  rows={3}
-                  disabled={submitting}
-                  className="w-full px-3 py-2 rounded-md text-sm border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 resize-y"
+            );
+          })}
+
+          {!isEdit && (
+            <button
+              onClick={addRow}
+              disabled={submitting || !allComplete}
+              title={
+                !allComplete
+                  ? "Fill in all items before adding another"
+                  : undefined
+              }
+              className="w-full h-10 rounded-md text-sm font-medium border border-dashed border-border bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+            >
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
                 />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  Predicted transcript
-                </label>
-                <textarea
-                  value={row.predicted}
-                  onChange={(e) =>
-                    updateRow(row.id, { predicted: e.target.value })
-                  }
-                  placeholder="What the system transcribed"
-                  rows={3}
-                  disabled={submitting}
-                  className="w-full px-3 py-2 rounded-md text-sm border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 resize-y"
-                />
-              </div>
-            </div>
-          ))}
+              </svg>
+              Add another item
+            </button>
+          )}
 
           {error && (
             <div className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500">
@@ -282,7 +451,7 @@ export function AddSttItemsDialog({
             </button>
             <button
               onClick={handleSubmit}
-              disabled={validRows.length === 0 || submitting}
+              disabled={submitting}
               className="h-9 md:h-10 px-4 rounded-md text-sm md:text-base font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submitting
@@ -290,11 +459,11 @@ export function AddSttItemsDialog({
                   ? "Saving..."
                   : "Adding..."
                 : isEdit
-                  ? validRows.length > 1
-                    ? `Save ${validRows.length} items`
+                  ? rows.length > 1
+                    ? `Save ${rows.length} items`
                     : "Save item"
-                  : validRows.length > 1
-                    ? `Add ${validRows.length} items`
+                  : rows.length > 1
+                    ? `Add ${rows.length} items`
                     : "Add item"}
             </button>
           </div>

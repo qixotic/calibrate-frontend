@@ -366,6 +366,7 @@ export function exportInputCols(
 ): string[] {
   if (taskType === "stt")
     return ["reference_transcript", "predicted_transcript"];
+  if (taskType === "tts") return ["text", "audio_path"];
   if (taskType === "llm") return ["conversation_history", "agent_response"];
   return ["transcript"];
 }
@@ -410,6 +411,12 @@ export function extractPayloadInputValues(
       typeof p.predicted_transcript === "string"
         ? p.predicted_transcript
         : "",
+    ];
+  }
+  if (taskType === "tts") {
+    return [
+      typeof p.text === "string" ? p.text : "",
+      typeof p.audio_path === "string" ? p.audio_path : "",
     ];
   }
   if (taskType === "llm") {
@@ -1374,7 +1381,7 @@ export function ItemDetailPane({
 
   return (
     <div className="flex flex-col md:flex-row min-h-0 flex-1 md:overflow-hidden">
-      <div className="md:flex-[5] md:min-h-0 md:overflow-y-auto px-4 pb-4 md:px-6 md:pb-6 md:border-r border-border">
+      <div className="md:flex-[5] md:min-h-0 md:overflow-y-auto p-4 md:p-6 md:border-r border-border">
         <ItemPane item={item} taskType={taskType} />
       </div>
       <div className="md:flex-[3] md:min-h-0 md:overflow-y-auto p-4 md:p-6">
@@ -1410,6 +1417,7 @@ function HumanAgreementSummary({
   evaluatorNamesById,
   versionLabels,
   linkEvaluators,
+  headerActions,
 }: {
   jobStatus: EvaluatorRunJob["status"];
   agreement: HumanAgreement | undefined;
@@ -1421,6 +1429,9 @@ function HumanAgreementSummary({
   evaluatorNamesById: Record<string, string>;
   versionLabels: Record<string, string>;
   linkEvaluators: boolean;
+  /** Status pill + action buttons, rendered on the heading row when the
+   * agreement cards show (so they don't sit on their own line above). */
+  headerActions?: React.ReactNode;
 }) {
   if (jobStatus !== "completed") return null;
   if (!agreement || agreement.evaluators.length === 0) return null;
@@ -1458,12 +1469,15 @@ function HumanAgreementSummary({
 
   return (
     <div className="space-y-2">
-      <div>
-        <h2 className="text-sm font-semibold">Human agreement</h2>
-        <p className="text-xs text-muted-foreground max-w-2xl mt-1">
-          How closely each evaluator&apos;s outputs in this run match the human
-          annotations on the same items
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold">Human agreement</h2>
+          <p className="text-xs text-muted-foreground max-w-2xl mt-1">
+            How closely each evaluator&apos;s outputs in this run match the
+            human annotations on the same items
+          </p>
+        </div>
+        {headerActions}
       </div>
       <div className="flex items-stretch gap-3 overflow-x-auto pb-1">
         {evaluators.map((ev) => {
@@ -1521,9 +1535,9 @@ export interface EvaluatorRunDetailViewProps {
   versionLabels: Record<string, string>;
   /** When true, evaluator names link out to /evaluators/{id}. Auth pages enable this; public pages disable it. */
   linkEvaluators?: boolean;
-  /** Slot rendered next to the status pill (typically a ShareButton in auth view). */
+  /** Slot rendered next to the status pill on the right (typically unused now that Share lives in `actionsSlot`). */
   shareSlot?: React.ReactNode;
-  /** Slot rendered right-aligned on the header row (typically an Export button in auth view). */
+  /** Slot rendered right-aligned after the status pill (Re-run / Export / Share). */
   actionsSlot?: React.ReactNode;
   /** Optional banner shown above the body (e.g. caller's export error). */
   topError?: string | null;
@@ -1707,6 +1721,7 @@ export function EvaluatorRunDetailView({
   if (
     !(
       task.type === "stt" ||
+      task.type === "tts" ||
       task.type === "llm" ||
       task.type === "llm-general" ||
       task.type === "conversation"
@@ -1715,23 +1730,88 @@ export function EvaluatorRunDetailView({
     return null;
   }
 
+  const ha = job.human_agreement;
+  // The agreement cards (rendered by HumanAgreementSummary) already name the
+  // evaluators. When they show, the status pill + action buttons move up onto
+  // the "Human agreement" heading row instead of sitting on their own line.
+  const cardsWillRender =
+    job.status === "completed" &&
+    !!ha &&
+    ha.evaluators.length > 0 &&
+    !(
+      ha.evaluators.every((e) => e.agreement === null) && ha.items.length === 0
+    );
+
+  const statusPill = !hideStatusPill ? (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${statusPillClass(
+        job.status,
+      )}`}
+    >
+      {statusLabel(job.status)}
+    </span>
+  ) : null;
+
+  const headerActions =
+    statusPill || shareSlot || actionsSlot ? (
+      <div className="flex items-center gap-2 flex-wrap shrink-0">
+        {statusPill}
+        {shareSlot}
+        {actionsSlot}
+      </div>
+    ) : null;
+
   return (
     <>
-      {(!hideStatusPill || shareSlot || actionsSlot) && (
+      {!cardsWillRender && (
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            {!hideStatusPill && (
-              <span
-                className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${statusPillClass(
-                  job.status,
-                )}`}
-              >
-                {statusLabel(job.status)}
-              </span>
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            {detailsEvaluators.length === 0 ? (
+              <span className="text-sm text-muted-foreground">—</span>
+            ) : (
+              detailsEvaluators.map((e) => {
+                    const name = evaluatorDisplayName(e, evaluatorNamesById);
+                    const label = e.evaluator_version_id
+                      ? versionLabels[e.evaluator_version_id]
+                      : null;
+                    const pillClass =
+                      "inline-flex items-center gap-1 flex-wrap px-2 py-0.5 rounded-md text-sm font-semibold border border-border bg-muted/40 text-foreground shrink-0 text-left";
+                    const inner = (
+                      <>
+                        <span className="break-words whitespace-normal">
+                          {name}
+                        </span>
+                        {label && (
+                          <span className="font-mono text-[11px] text-muted-foreground">
+                            {label}
+                          </span>
+                        )}
+                      </>
+                    );
+                    if (linkEvaluators) {
+                      return (
+                        <Link
+                          key={`${e.evaluator_id}-${e.evaluator_version_id ?? ""}`}
+                          href={`/evaluators/${e.evaluator_id}`}
+                          title={`Open ${name}`}
+                          className={`${pillClass} hover:bg-muted hover:border-foreground/30 transition-colors cursor-pointer`}
+                        >
+                          {inner}
+                        </Link>
+                      );
+                    }
+                    return (
+                      <span
+                        key={`${e.evaluator_id}-${e.evaluator_version_id ?? ""}`}
+                        className={pillClass}
+                      >
+                        {inner}
+                      </span>
+                    );
+                  })
             )}
-            {shareSlot}
           </div>
-          {actionsSlot}
+          {headerActions}
         </div>
       )}
       {topError && (
@@ -1739,66 +1819,6 @@ export function EvaluatorRunDetailView({
           {topError}
         </div>
       )}
-      {(() => {
-        const ha = job.human_agreement;
-        const cardsWillRender =
-          job.status === "completed" &&
-          !!ha &&
-          ha.evaluators.length > 0 &&
-          !(
-            ha.evaluators.every((e) => e.agreement === null) &&
-            ha.items.length === 0
-          );
-        if (cardsWillRender) return null;
-        return (
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            {detailsEvaluators.length === 0 ? (
-              <span className="text-sm text-muted-foreground">—</span>
-            ) : (
-              detailsEvaluators.map((e) => {
-                const name = evaluatorDisplayName(e, evaluatorNamesById);
-                const label = e.evaluator_version_id
-                  ? versionLabels[e.evaluator_version_id]
-                  : null;
-                const pillClass =
-                  "inline-flex items-center gap-1 flex-wrap px-2 py-0.5 rounded-md text-sm font-semibold border border-border bg-muted/40 text-foreground shrink-0 text-left";
-                const inner = (
-                  <>
-                    <span className="break-words whitespace-normal">
-                      {name}
-                    </span>
-                    {label && (
-                      <span className="font-mono text-[11px] text-muted-foreground">
-                        {label}
-                      </span>
-                    )}
-                  </>
-                );
-                if (linkEvaluators) {
-                  return (
-                    <Link
-                      key={`${e.evaluator_id}-${e.evaluator_version_id ?? ""}`}
-                      href={`/evaluators/${e.evaluator_id}`}
-                      title={`Open ${name}`}
-                      className={`${pillClass} hover:bg-muted hover:border-foreground/30 transition-colors cursor-pointer`}
-                    >
-                      {inner}
-                    </Link>
-                  );
-                }
-                return (
-                  <span
-                    key={`${e.evaluator_id}-${e.evaluator_version_id ?? ""}`}
-                    className={pillClass}
-                  >
-                    {inner}
-                  </span>
-                );
-              })
-            )}
-          </div>
-        );
-      })()}
 
       <HumanAgreementSummary
         jobStatus={job.status}
@@ -1807,6 +1827,7 @@ export function EvaluatorRunDetailView({
         evaluatorNamesById={evaluatorNamesById}
         versionLabels={versionLabels}
         linkEvaluators={linkEvaluators}
+        headerActions={cardsWillRender ? headerActions : null}
       />
 
       <div className="border border-border rounded-xl [overflow:clip] flex flex-col flex-1 min-h-0">

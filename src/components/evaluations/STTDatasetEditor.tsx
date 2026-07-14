@@ -7,13 +7,21 @@ import {
   forwardRef,
   useImperativeHandle,
 } from "react";
-import { signOut } from "next-auth/react";
 import { toast } from "sonner";
 import JSZip from "jszip";
 import { LIMITS, showLimitToast } from "@/constants/limits";
 import { DeleteConfirmationDialog } from "../DeleteConfirmationDialog";
 import { RowIndexBadge } from "./RowIndexBadge";
 import { LazyAudioPlayer } from "./LazyAudioPlayer";
+import {
+  createSilentWav,
+  findDataCsvInZip,
+  findZipAudioFile,
+  getAudioDuration,
+  parseCsvLine,
+  splitCsvLines,
+  uploadAudioToS3,
+} from "./audioZip";
 import type { DatasetItem } from "@/lib/datasets";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -58,21 +66,6 @@ type Props = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const getAudioDuration = (file: File): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const audio = new Audio();
-    const url = URL.createObjectURL(file);
-    audio.src = url;
-    audio.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
-      resolve(audio.duration);
-    };
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Failed to load audio"));
-    };
-  });
 
 const getFileName = (file: File) =>
   file.name.length > 20 ? `${file.name.substring(0, 20)}...` : file.name;
@@ -166,46 +159,8 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
 
     // ── S3 upload ──────────────────────────────────────────────────────────
 
-    const uploadFileToS3 = async (file: File): Promise<string | null> => {
-      try {
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
-        if (!backendUrl) return null;
-
-        const response = await fetch(`${backendUrl}/presigned-url`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            task_type: "stt",
-            content_type: file.type || "audio/wav",
-            extension: "wav",
-          }),
-        });
-
-        if (response.status === 401) {
-          await signOut({ callbackUrl: "/login" });
-          return null;
-        }
-        if (!response.ok) throw new Error("Failed to get presigned URL");
-
-        const data = await response.json();
-        const { presigned_url: presignedUrl, s3_path: s3Path } = data;
-        if (!presignedUrl || !s3Path) throw new Error("Missing URL/path");
-
-        const uploadResponse = await fetch(presignedUrl, {
-          method: "PUT",
-          headers: { "Content-Type": file.type || "audio/wav" },
-          body: file,
-        });
-        if (!uploadResponse.ok) throw new Error("S3 upload failed");
-
-        return s3Path;
-      } catch {
-        return null;
-      }
-    };
+    const uploadFileToS3 = (file: File): Promise<string | null> =>
+      uploadAudioToS3(file, accessToken, "stt");
 
     // ── Row management ────────────────────────────────────────────────────
 
@@ -334,54 +289,6 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
     const handleDownloadSampleZip = async () => {
       const zip = new JSZip();
       const audiosFolder = zip.folder("audios");
-      // Real PCM silence (not header-only): empty `data` chunks fail in QuickTime (-12842). Use 44.1 kHz
-      // and ~100 ms so consumer players and `HTMLAudioElement` duration metadata behave reliably.
-      const createSilentWav = () => {
-        const sampleRate = 44_100;
-        const numChannels = 1;
-        const bitsPerSample = 16;
-        const bytesPerSample = bitsPerSample / 8;
-        const numSamples = 4410; // 100 ms
-        const dataBytes = numSamples * numChannels * bytesPerSample;
-        const blockAlign = numChannels * bytesPerSample;
-        const byteRate = sampleRate * blockAlign;
-        const fmtChunkPayload = 16;
-        const headerBytes =
-          12 + 8 + fmtChunkPayload + 8; // RIFF + fmt + data chunk headers
-        const fileSize = headerBytes + dataBytes;
-        const riffChunkSize = fileSize - 8;
-
-        const buffer = new ArrayBuffer(fileSize);
-        const view = new DataView(buffer);
-        let o = 0;
-        view.setUint32(o, 0x52494646, false);
-        o += 4;
-        view.setUint32(o, riffChunkSize, true);
-        o += 4;
-        view.setUint32(o, 0x57415645, false);
-        o += 4;
-        view.setUint32(o, 0x666d7420, false);
-        o += 4;
-        view.setUint32(o, fmtChunkPayload, true);
-        o += 4;
-        view.setUint16(o, 1, true);
-        o += 2;
-        view.setUint16(o, numChannels, true);
-        o += 2;
-        view.setUint32(o, sampleRate, true);
-        o += 4;
-        view.setUint32(o, byteRate, true);
-        o += 4;
-        view.setUint16(o, blockAlign, true);
-        o += 2;
-        view.setUint16(o, bitsPerSample, true);
-        o += 2;
-        view.setUint32(o, 0x64617461, false);
-        o += 4;
-        view.setUint32(o, dataBytes, true);
-        o += 4;
-        return new Uint8Array(buffer);
-      };
       const wavOpts = { compression: "STORE" as const };
       audiosFolder?.file("sample_1.wav", createSilentWav(), wavOpts);
       audiosFolder?.file("sample_2.wav", createSilentWav(), wavOpts);
@@ -409,24 +316,11 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
       try {
         const zip = await JSZip.loadAsync(file);
 
-        let csvFile = zip.file("data.csv");
-        let basePath = "";
-        if (!csvFile) {
-          const topLevel = Object.keys(zip.files).filter(
-            (p) => !p.includes("__MACOSX") && !p.startsWith("._"),
-          );
-          const folders = topLevel.filter((p) => p.endsWith("/") && p.split("/").length === 2);
-          for (const folder of folders) {
-            const candidate = zip.file(`${folder}data.csv`);
-            if (candidate) { csvFile = candidate; basePath = folder; break; }
-          }
-        }
-        if (!csvFile) { toast.error("ZIP must contain a data.csv file"); return; }
+        const csv = findDataCsvInZip(zip);
+        if (!csv) { toast.error("ZIP must contain a data.csv file"); return; }
+        const basePath = csv.basePath;
 
-        let csvContent = await csvFile.async("string");
-        if (csvContent.charCodeAt(0) === 0xfeff) csvContent = csvContent.slice(1);
-        const lines = csvContent.split(/\r\n|\n|\r/).filter((l) => l.trim());
-
+        const lines = splitCsvLines(await csv.file.async("string"));
         if (lines.length < 2) {
           toast.error(`data.csv must have a header and at least one data row. Found ${lines.length} line(s).`);
           return;
@@ -442,15 +336,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
 
         const dataRows: { audioFileName: string; text: string }[] = [];
         for (let i = 1; i < lines.length; i++) {
-          const values: string[] = [];
-          let current = "";
-          let inQuotes = false;
-          for (const char of lines[i]) {
-            if (char === '"') { inQuotes = !inQuotes; }
-            else if (char === "," && !inQuotes) { values.push(current.trim()); current = ""; }
-            else { current += char; }
-          }
-          values.push(current.trim());
+          const values = parseCsvLine(lines[i]);
           if (values[audioIdx] && values[textIdx]) {
             dataRows.push({ audioFileName: values[audioIdx], text: values[textIdx] });
           }
@@ -471,9 +357,7 @@ export const STTDatasetEditor = forwardRef<STTDatasetEditorHandle, Props>(
         for (let i = 0; i < dataRows.length; i++) {
           const { audioFileName, text } = dataRows[i];
           const rowId = Date.now().toString() + i;
-          const audioFileZip =
-            zip.file(`${basePath}audios/${audioFileName}`) ||
-            zip.file(`${basePath}${audioFileName}`);
+          const audioFileZip = findZipAudioFile(zip, basePath, audioFileName);
 
           if (!audioFileZip) {
             builtRows.push({ id: rowId, audioFile: null, audioUrl: null, text, s3Path: null });
