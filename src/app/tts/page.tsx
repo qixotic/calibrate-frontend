@@ -13,7 +13,15 @@ import { useSidebarState } from "@/lib/sidebar";
 import { Dataset, getDataset } from "@/lib/datasets";
 import { unwrapList } from "@/lib/api";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
-import { useDatasetManagement } from "@/hooks";
+import {
+  JobBulkDeleteBar,
+  JobSelectAllCell,
+  JobRowSelectCell,
+  JobRowDeleteCell,
+  JobMobileSelectDelete,
+  JobDeleteDialog,
+} from "@/components/eval-jobs/JobDeleteControls";
+import { useDatasetManagement, useJobDeletion } from "@/hooks";
 
 type TTSJob = {
   uuid: string;
@@ -193,6 +201,29 @@ function TTSPageInner() {
     return sortOrder === "asc" ? dateA - dateB : dateB - dateA;
   });
 
+  const {
+    selectedJobUuids,
+    allSelected,
+    hasBulkDeletableJobs,
+    jobCheckboxProps,
+    toggleSelectAll,
+    deleteDialogOpen,
+    jobsToDeleteBulk,
+    isJobDeleting,
+    deleteError,
+    openDeleteDialog,
+    openBulkDeleteDialog,
+    closeDeleteDialog,
+    deleteJobs,
+  } = useJobDeletion<TTSJob>({
+    jobs: sortedJobs,
+    accessToken: backendAccessToken,
+    onDeleted: (uuids) => {
+      const deletedSet = new Set(uuids);
+      setJobs((prev) => prev.filter((job) => !deletedSet.has(job.uuid)));
+    },
+  });
+
   return (
     <AppLayout
       activeItem="tts"
@@ -327,10 +358,11 @@ function TTSPageInner() {
               </div>
             ) : (
               <>
-                <p className="text-sm text-muted-foreground mb-3">
-                  {jobs.length}{" "}
-                  {jobs.length === 1 ? "evaluation" : "evaluations"}
-                </p>
+                <JobBulkDeleteBar
+                  count={jobs.length}
+                  selectedCount={selectedJobUuids.size}
+                  onBulkDelete={openBulkDeleteDialog}
+                />
                 {/* Mobile Sort Button */}
                 <div className="flex justify-end md:hidden mb-3">
                   <button
@@ -359,7 +391,12 @@ function TTSPageInner() {
                 {/* Desktop Table View */}
                 <div className="hidden md:block border border-border rounded-xl overflow-hidden">
                   {/* Table Header */}
-                  <div className="grid grid-cols-[2fr_1fr_100px_100px_80px_1fr] gap-4 px-4 py-2 border-b border-border bg-muted/30">
+                  <div className="grid grid-cols-[40px_2fr_1fr_100px_100px_80px_1fr_48px] gap-4 px-4 py-2 border-b border-border bg-muted/30">
+                    <JobSelectAllCell
+                      allSelected={allSelected}
+                      hasBulkDeletableJobs={hasBulkDeletableJobs}
+                      onToggle={toggleSelectAll}
+                    />
                     <div className="text-sm font-medium text-muted-foreground">
                       Providers
                     </div>
@@ -398,14 +435,17 @@ function TTSPageInner() {
                         </svg>
                       </button>
                     </div>
+                    <div />
                   </div>
                   {/* Table Rows */}
                   {sortedJobs.map((job) => (
                     <div
                       key={job.uuid}
                       onClick={() => router.push(`/tts/${job.uuid}`)}
-                      className="grid grid-cols-[2fr_1fr_100px_100px_80px_1fr] gap-4 px-4 py-3 border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors items-center cursor-pointer"
+                      className="grid grid-cols-[40px_2fr_1fr_100px_100px_80px_1fr_48px] gap-4 px-4 py-3 border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors items-center cursor-pointer"
                     >
+                      {/* Selection checkbox */}
+                      <JobRowSelectCell checkboxProps={jobCheckboxProps(job)} />
                       {/* Providers as pills */}
                       <div className="flex flex-wrap gap-1.5">
                         {job.providers?.map((provider) => (
@@ -476,6 +516,8 @@ function TTSPageInner() {
                       <p className="text-sm text-muted-foreground">
                         {job.created_at ? formatDate(job.created_at) : "—"}
                       </p>
+                      {/* Delete */}
+                      <JobRowDeleteCell onDelete={() => openDeleteDialog(job)} />
                     </div>
                   ))}
                 </div>
@@ -489,6 +531,11 @@ function TTSPageInner() {
                       className="block border border-border rounded-xl overflow-hidden bg-background hover:shadow-lg hover:border-foreground/20 transition-all duration-200 cursor-pointer"
                     >
                       <div className="p-5">
+                        {/* Selection + delete controls */}
+                        <JobMobileSelectDelete
+                          checkboxProps={jobCheckboxProps(job)}
+                          onDelete={() => openDeleteDialog(job)}
+                        />
                         {/* Header with Providers */}
                         <div className="flex flex-wrap gap-2 mb-4">
                           {job.providers?.map((provider) => (
@@ -782,6 +829,16 @@ function TTSPageInner() {
           </>
         )}
       </div>
+
+      {/* Delete Evaluation Confirmation */}
+      <JobDeleteDialog
+        open={deleteDialogOpen}
+        bulkCount={jobsToDeleteBulk.length}
+        isDeleting={isJobDeleting}
+        error={deleteError}
+        onClose={closeDeleteDialog}
+        onConfirm={deleteJobs}
+      />
 
       {/* Delete Dataset Confirmation */}
       {deleteDatasetId && (
