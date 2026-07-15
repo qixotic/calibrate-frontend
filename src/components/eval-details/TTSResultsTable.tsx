@@ -2,6 +2,12 @@ import React from "react";
 import { Tooltip } from "@/components/Tooltip";
 import { LazyAudioPlayer } from "@/components/evaluations/LazyAudioPlayer";
 import {
+  useLabellingColumn,
+  LabellingHeaderCheckbox,
+  LabellingSelectCell,
+  LABELLING_CHECKBOX_COL_WIDTH,
+} from "./labellingSelectionColumn";
+import {
   EvaluatorScoreCell,
   readEvaluatorCell,
 } from "./EvaluatorScoreCell";
@@ -74,6 +80,19 @@ type TTSResultsTableProps = {
   judgeLabel?: string;
   /** When provided, replaces the single LLM-judge column with one column per entry. Each evaluator's score/reasoning is read from `result[col.scoreField ?? `${col.key}_score`]` and `result[col.reasoningField ?? `${col.key}_reasoning`]`. */
   evaluatorColumns?: TTSEvaluatorColumn[];
+  // --- Labelling selection (opt-in) --------------------------------------
+  // When `onToggleLabellingSelection` + `labellingKeyForRow` are provided, a
+  // leading checkbox column is rendered so rows can be picked for "Submit for
+  // labelling" (mirrors the STT / LLM test-run flow). Callers own the
+  // selection set and the row→key mapping (TTS rows are keyed per provider,
+  // e.g. `openai:0`). Public / read-only tables pass none of these and render
+  // no checkbox column.
+  labellingSelection?: Set<string>;
+  onToggleLabellingSelection?: (key: string) => void;
+  onLabellingBulkToggle?: (keys: string[]) => void;
+  labellingKeyForRow?: (row: TTSResultRow, index: number) => string;
+  /** Rows for which selection is disabled (e.g. no synthesized audio). Defaults to "row has a non-empty audio_path". */
+  labellingRowEligible?: (row: TTSResultRow, index: number) => boolean;
 };
 
 // Fixed pixel widths for the desktop layout. Evaluator columns are sized
@@ -87,10 +106,26 @@ const TTS_COL_WIDTHS = {
   evaluator: 140,
 } as const;
 
-export function TTSResultsTable({ results, showMetrics = true, judgeLabel = "Evaluator", evaluatorColumns }: TTSResultsTableProps) {
+export function TTSResultsTable({ results, showMetrics = true, judgeLabel = "Evaluator", evaluatorColumns, labellingSelection, onToggleLabellingSelection, onLabellingBulkToggle, labellingKeyForRow, labellingRowEligible }: TTSResultsTableProps) {
   // When `evaluatorColumns` is provided, each evaluator gets its own column;
   // the legacy `llm_judge_*` rendering branch is skipped.
   const useDynamic = Array.isArray(evaluatorColumns) && evaluatorColumns.length > 0;
+
+  // Labelling checkbox column (opt-in). Eligibility defaults to "row has a
+  // synthesized clip". The shared hook owns the derived state so this table
+  // and STTResultsTable can't drift.
+  const { showCheckboxes, rowEligible, allSelectableKeys, allSelected } =
+    useLabellingColumn(
+      results,
+      {
+        labellingSelection,
+        onToggleLabellingSelection,
+        onLabellingBulkToggle,
+        labellingKeyForRow,
+        labellingRowEligible,
+      },
+      (r) => !!r.audio_path && r.audio_path.trim() !== "",
+    );
 
   // Compute the table's minimum pixel width from the column widths above so
   // the inner `overflow-x-auto` wrapper can scroll once we run out of room.
@@ -99,6 +134,7 @@ export function TTSResultsTable({ results, showMetrics = true, judgeLabel = "Eva
   // are several evaluators.
   const evaluatorColCount = showMetrics ? (useDynamic ? evaluatorColumns!.length : 1) : 0;
   const tableMinWidth =
+    (showCheckboxes ? LABELLING_CHECKBOX_COL_WIDTH : 0) +
     TTS_COL_WIDTHS.id +
     TTS_COL_WIDTHS.text +
     TTS_COL_WIDTHS.audio +
@@ -112,6 +148,13 @@ export function TTSResultsTable({ results, showMetrics = true, judgeLabel = "Eva
           <table className="w-full table-fixed" style={{ minWidth: `${tableMinWidth}px` }}>
             <thead className="bg-muted/50 border-b border-border">
               <tr>
+                {showCheckboxes && (
+                  <LabellingHeaderCheckbox
+                    allSelectableKeys={allSelectableKeys}
+                    allSelected={allSelected}
+                    onBulkToggle={onLabellingBulkToggle}
+                  />
+                )}
                 <th style={{ width: TTS_COL_WIDTHS.id }} className="px-4 py-3 text-left text-[12px] font-medium text-foreground">ID</th>
                 <th style={{ width: TTS_COL_WIDTHS.text }} className="px-4 py-3 text-left text-[12px] font-medium text-foreground">Text</th>
                 <th style={{ width: TTS_COL_WIDTHS.audio }} className="px-4 py-3 text-left text-[12px] font-medium text-foreground">Audio</th>
@@ -131,6 +174,17 @@ export function TTSResultsTable({ results, showMetrics = true, judgeLabel = "Eva
             <tbody>
               {results.map((result, index) => (
                 <tr key={index} className="border-b border-border last:border-b-0">
+                  {showCheckboxes && (() => {
+                    const key = labellingKeyForRow!(result, index);
+                    return (
+                      <LabellingSelectCell
+                        eligible={rowEligible(result, index)}
+                        checked={labellingSelection?.has(key) ?? false}
+                        onToggle={() => onToggleLabellingSelection!(key)}
+                        disabledTitle="Rows without synthesized audio can't be labelled"
+                      />
+                    );
+                  })()}
                   <td className="px-4 py-3 text-[13px] text-foreground">{index + 1}</td>
                   <td className="px-4 py-3 text-[13px] text-foreground break-words">{result.text}</td>
                   <td className="px-4 py-3 text-[13px] text-foreground">
@@ -176,6 +230,9 @@ export function TTSResultsTable({ results, showMetrics = true, judgeLabel = "Eva
           return (
             <div key={index} className="border border-border rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
+                {/* Labelling checkboxes are desktop-only — the "Submit for
+                    labelling" button is hidden on mobile, so selecting here
+                    would be a dead end. */}
                 <span className="text-[12px] text-muted-foreground font-medium">#{index + 1}</span>
                 {showMetrics && !useDynamic && result.llm_judge_score && (
                   <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium ${

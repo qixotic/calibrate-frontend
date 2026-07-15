@@ -26,6 +26,21 @@ import {
   type TTSLeaderboardSummary,
 } from "@/components/eval-details";
 import { readEvaluatorCell } from "@/components/eval-details/EvaluatorScoreCell";
+import {
+  AddRunToLabellingTaskDialog,
+  type TtsLabellingRow,
+  type SourceEvaluatorRef,
+} from "@/components/human-labelling/AddRunToLabellingTaskDialog";
+import { useLabellingSelection } from "@/components/human-labelling/useLabellingSelection";
+import {
+  dedupeSourceEvaluators,
+  SubmitForLabellingButton,
+} from "@/components/human-labelling/labellingSubmit";
+import {
+  ttsRowAudioKey,
+  countTtsLabellingEligible,
+  buildTtsLabellingRows,
+} from "@/components/human-labelling/ttsLabellingSource";
 import { useSidebarState } from "@/lib/sidebar";
 import { getDataset } from "@/lib/datasets";
 import { ShareButton } from "@/components/ShareButton";
@@ -98,7 +113,13 @@ type ProviderMetrics = {
 type ProviderResultRow = {
   id: string;
   text: string;
+  // Playback/download URL for the synthesized clip — used by the on-page
+  // audio player. NOT accepted by the evaluator (see `audio_s3_path`).
   audio_path: string;
+  // S3 storage key for the same clip (the value returned by
+  // `POST /presigned-url`). This is what "Run evaluators" / labelling items
+  // require, so it — not `audio_path` — is what we submit for labelling.
+  audio_s3_path?: string | null;
   llm_judge_score?: string;
   llm_judge_reasoning?: string;
   [k: string]: unknown;
@@ -559,6 +580,45 @@ export default function TTSEvaluationDetailPage() {
     [aboutEvaluators, evaluationResult, defaultEvaluator, judgeLabel],
   );
 
+  // "Submit for labelling": pick individual result rows (per provider) and
+  // send them to a TTS annotation task. Rows are keyed `${provider}:${index}`
+  // — the same keys `TTSResultsTable` toggles — so selection is stable across
+  // provider switches. Only the SELECTED rows become items (source text +
+  // audio STORAGE KEY); names include provider + index + a run-id suffix so
+  // they stay unique within a task. Evaluators come from `evaluatorColumns`.
+  const [addToTaskOpen, setAddToTaskOpen] = useState(false);
+  const {
+    selected: ttsLabellingSelected,
+    toggle: toggleTtsLabelling,
+    bulkToggle: bulkToggleTtsLabelling,
+  } = useLabellingSelection();
+  // Labelling items must carry the audio STORAGE KEY (`audio_s3_path`), not the
+  // playback URL — the evaluator rejects playback/download URLs. Eligibility
+  // and row-building live in `ttsLabellingSource` (pure + unit tested); a row
+  // is only eligible when it has a key, so we never submit an unevaluatable
+  // item. Total eligible count decides whether the button shows at all.
+  const ttsLabellingEligibleCount = useMemo(
+    () => countTtsLabellingEligible(evaluationResult?.provider_results ?? []),
+    [evaluationResult],
+  );
+  const ttsLabellingRows: TtsLabellingRow[] = useMemo(
+    () =>
+      buildTtsLabellingRows(
+        evaluationResult?.provider_results ?? [],
+        ttsLabellingSelected,
+        taskId.slice(0, 8),
+        getProviderLabel,
+      ),
+    [evaluationResult, taskId, ttsLabellingSelected],
+  );
+  const ttsLabellingEvaluators: SourceEvaluatorRef[] = useMemo(
+    () =>
+      dedupeSourceEvaluators(
+        evaluatorColumns.map((c) => ({ uuid: c.evaluatorUuid, name: c.label })),
+      ),
+    [evaluatorColumns],
+  );
+
   const canShowLeaderboard =
     evaluationResult?.status === "done" &&
     !!evaluationResult.leaderboard_summary;
@@ -771,6 +831,17 @@ export default function TTSEvaluationDetailPage() {
                   initialShareToken={evaluationResult.share_token ?? null}
                 />
               )}
+              {/* Send the selected per-row (text, audio) pairs to a
+                  human-alignment (TTS) task for labelling. Tick rows in the
+                  Outputs table first. Desktop-only, matching STT. */}
+              {evaluationResult.status === "done" &&
+                ttsLabellingEligibleCount > 0 && (
+                  <SubmitForLabellingButton
+                    count={ttsLabellingRows.length}
+                    emptyMessage="Select one or more rows to submit for labelling"
+                    onOpen={() => setAddToTaskOpen(true)}
+                  />
+                )}
               {evaluationResult.status === "failed" &&
                 backendAccessToken &&
                 evaluationResult.dataset_id && (
@@ -896,6 +967,26 @@ export default function TTSEvaluationDetailPage() {
                       status={evaluationResult.status}
                       evaluatorColumns={evaluatorColumns}
                       getProviderLabel={getProviderLabel}
+                      labellingSelection={
+                        evaluationResult.status === "done"
+                          ? ttsLabellingSelected
+                          : undefined
+                      }
+                      onToggleLabellingSelection={
+                        evaluationResult.status === "done"
+                          ? toggleTtsLabelling
+                          : undefined
+                      }
+                      onLabellingBulkToggle={
+                        evaluationResult.status === "done"
+                          ? bulkToggleTtsLabelling
+                          : undefined
+                      }
+                      labellingRowEligible={
+                        evaluationResult.status === "done"
+                          ? (r) => ttsRowAudioKey(r) !== ""
+                          : undefined
+                      }
                     />
                   )}
                 </>
@@ -903,6 +994,18 @@ export default function TTSEvaluationDetailPage() {
           </div>
         )}
       </div>
+
+      <AddRunToLabellingTaskDialog
+        isOpen={addToTaskOpen}
+        onClose={() => setAddToTaskOpen(false)}
+        source={{
+          type: "tts_run",
+          runUuid: taskId,
+          runName: evaluationResult?.dataset_name ?? undefined,
+          rows: ttsLabellingRows,
+          evaluators: ttsLabellingEvaluators,
+        }}
+      />
     </AppLayout>
   );
 }
