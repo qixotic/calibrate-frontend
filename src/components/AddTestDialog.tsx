@@ -12,6 +12,8 @@ import { createPortal } from "react-dom";
 import { signOut } from "next-auth/react";
 import { useAccessToken } from "@/hooks";
 import { getDefaultHeaders, unwrapList } from "@/lib/api";
+import { isDefaultLLMNextReplyEvaluator } from "@/lib/defaultEvaluators";
+import { isDefaultEvaluator, isOwnedEvaluator } from "@/lib/evaluatorApi";
 import { ToolPicker, AvailableTool } from "@/components/ToolPicker";
 import { NestedContainer } from "@/components/ui/NestedContainer";
 import {
@@ -682,8 +684,6 @@ export type EvaluatorRefPayload = {
   variable_values?: Record<string, string>;
 };
 
-// The default LLM "Correctness" evaluator. Identified by a stable backend slug.
-const DEFAULT_NEXT_REPLY_EVALUATOR_SLUG = "default-llm-next-reply";
 
 type AttachedEvaluator = {
   evaluator_uuid: string;
@@ -699,7 +699,10 @@ type LLMEvaluatorOption = {
   name: string;
   description?: string;
   slug: string | null;
-  owner_user_id: string | null;
+  /** Origin slug of a per-org default fork (forks null out `slug`). */
+  source_default_slug?: string | null;
+  /** True for org default (forked seed) evaluators — the default/custom marker. */
+  is_default?: boolean;
   variables: EvaluatorVariableDef[];
   /** "llm" for next-reply tab, "conversation" for conversation tab. */
   evaluator_type?: string;
@@ -1526,7 +1529,8 @@ export function AddTestDialog({
         name: string;
         description?: string;
         slug: string | null;
-        owner_user_id: string | null;
+        source_default_slug?: string | null;
+        is_default?: boolean;
         evaluator_type?: string;
         live_version?: { variables?: EvaluatorVariableDef[] | null } | null;
       }>(await response.json());
@@ -1542,7 +1546,8 @@ export function AddTestDialog({
           name: e.name,
           description: e.description,
           slug: e.slug,
-          owner_user_id: e.owner_user_id,
+          source_default_slug: e.source_default_slug,
+          is_default: e.is_default,
           evaluator_type: e.evaluator_type,
           variables: Array.isArray(e.live_version?.variables)
             ? (e.live_version!.variables as EvaluatorVariableDef[])
@@ -1604,8 +1609,8 @@ export function AddTestDialog({
       );
       if (agentMatches.length > 0) return agentMatches.map(toAttached);
       if (tab === "next-reply") {
-        const correctness = availableLLMEvaluators.find(
-          (o) => o.slug === DEFAULT_NEXT_REPLY_EVALUATOR_SLUG,
+        const correctness = availableLLMEvaluators.find((o) =>
+          isDefaultLLMNextReplyEvaluator(o),
         );
         if (correctness) return [toAttached(correctness)];
       }
@@ -1647,8 +1652,8 @@ export function AddTestDialog({
       return;
     }
 
-    const correctness = availableLLMEvaluators.find(
-      (e) => e.slug === DEFAULT_NEXT_REPLY_EVALUATOR_SLUG,
+    const correctness = availableLLMEvaluators.find((e) =>
+      isDefaultLLMNextReplyEvaluator(e),
     );
 
     // Legacy edit/duplicate: pre-fill criteria from the old free-text field.
@@ -3242,12 +3247,8 @@ export function AddTestDialog({
                                   </div>
                                 );
                               }
-                              const defaults = matches.filter(
-                                (o) => o.owner_user_id === null,
-                              );
-                              const mine = matches.filter(
-                                (o) => o.owner_user_id !== null,
-                              );
+                              const defaults = matches.filter(isDefaultEvaluator);
+                              const mine = matches.filter(isOwnedEvaluator);
                               const showSections =
                                 defaults.length > 0 && mine.length > 0;
                               const renderRow = (o: LLMEvaluatorOption) => {

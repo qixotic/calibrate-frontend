@@ -1,6 +1,7 @@
 "use client";
 import { reportError } from "@/lib/reportError";
 import { unwrapList } from "@/lib/api";
+import { isDefaultEvaluator } from "@/lib/evaluatorApi";
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -115,8 +116,8 @@ export function TextToSpeechEvaluation({ evaluateRef, onEvaluatingChange, initia
   const editorRef = useRef<TTSDatasetEditorHandle | null>(null);
   const maxRowsPerEval = useMaxRowsPerEval();
 
-  // Evaluators (filtered to TTS purpose). Defaults (`owner_user_id == null`)
-  // are pre-selected on first load — see /evaluators page for the same
+  // Evaluators (filtered to TTS purpose). Org defaults (`is_default`) are
+  // pre-selected on first load — see /evaluators page for the same
   // default vs my-evaluators distinction.
   const [availableEvaluators, setAvailableEvaluators] = useState<PickerItem[]>(
     []
@@ -181,7 +182,7 @@ export function TextToSpeechEvaluation({ evaluateRef, onEvaluatingChange, initia
             uuid: string;
             name: string;
             description?: string;
-            owner_user_id?: string | null;
+            is_default?: boolean;
             evaluator_type?: string;
           }>(data)
             .filter((m) => m.evaluator_type === "tts")
@@ -189,7 +190,7 @@ export function TextToSpeechEvaluation({ evaluateRef, onEvaluatingChange, initia
               uuid: m.uuid,
               name: m.name,
               description: m.description,
-              isDefault: !m.owner_user_id,
+              isDefault: isDefaultEvaluator(m),
             }));
 
         setAvailableEvaluators(

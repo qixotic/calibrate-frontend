@@ -19,6 +19,7 @@ import {
   type EvaluatorData,
   fetchAllEvaluators,
   deleteEvaluator as deleteEvaluatorRequest,
+  isOwnedEvaluator,
 } from "@/lib/evaluatorApi";
 import { EVALUATOR_USE_CASE_OPTIONS } from "@/components/evaluators/evaluatorUseCases";
 import { Select } from "@/components/ui/Select";
@@ -159,9 +160,12 @@ function MetricsPageInner() {
     router.push(`/evaluators/${newEvaluator.uuid}`);
   };
 
-  // Partition into default vs user-owned evaluators
-  const defaultEvaluators = evaluators.filter((e) => !e.owner_user_id);
-  const myEvaluators = evaluators.filter((e) => !!e.owner_user_id);
+  // Partition into org defaults vs custom evaluators. Keyed on `is_default`,
+  // not `owner_user_id`: default seeds are now forked per org, so a fork
+  // carries the org's `owner_user_id` AND `is_default: true`. Splitting on
+  // ownership would misfile every fork under "My evaluators".
+  const defaultEvaluators = evaluators.filter((e) => !isOwnedEvaluator(e));
+  const myEvaluators = evaluators.filter((e) => isOwnedEvaluator(e));
 
   const activeList = activeTab === "default" ? defaultEvaluators : myEvaluators;
 
@@ -376,7 +380,6 @@ function MetricsPageInner() {
         ) : (
           <div className="space-y-3">
             {filteredEvaluators.map((evaluator) => {
-              const isDefault = !evaluator.owner_user_id;
               return (
                 <div
                   key={evaluator.uuid}
@@ -413,6 +416,32 @@ function MetricsPageInner() {
                       )}
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0 pointer-events-auto">
+                      <Link
+                        href={`/evaluators/${evaluator.uuid}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-8 md:h-9 px-3 rounded-md text-xs md:text-sm font-medium border border-border bg-background hover:bg-muted/50 transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                        title="View evaluator"
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={1.5}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
+                          />
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                          />
+                        </svg>
+                        View
+                      </Link>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -436,30 +465,28 @@ function MetricsPageInner() {
                         </svg>
                         Duplicate
                       </button>
-                      {!isDefault && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openDeleteDialog(evaluator);
-                          }}
-                          className="w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
-                          title="Delete evaluator"
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDeleteDialog(evaluator);
+                        }}
+                        className="w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
+                        title="Delete evaluator"
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2}
                         >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
-                            />
-                          </svg>
-                        </button>
-                      )}
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
+                          />
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 </div>

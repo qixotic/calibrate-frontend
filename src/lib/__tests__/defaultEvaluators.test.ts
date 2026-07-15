@@ -1,7 +1,72 @@
 import {
   fetchDefaultLLMNextReplyEvaluator,
+  isDefaultLLMNextReplyEvaluator,
+  defaultOriginSlug,
+  matchesDefaultSlug,
   DEFAULT_LLM_NEXT_REPLY_SLUG,
 } from "../defaultEvaluators";
+
+describe("defaultOriginSlug", () => {
+  it("prefers source_default_slug (the fork's origin) over slug", () => {
+    expect(
+      defaultOriginSlug({ slug: "stale", source_default_slug: "origin" }),
+    ).toBe("origin");
+  });
+
+  it("falls back to slug for legacy unforked seeds", () => {
+    expect(defaultOriginSlug({ slug: "seed", source_default_slug: null })).toBe(
+      "seed",
+    );
+    expect(defaultOriginSlug({ slug: "seed-only" })).toBe("seed-only");
+  });
+
+  it("returns null when neither is present", () => {
+    expect(defaultOriginSlug({})).toBeNull();
+  });
+});
+
+describe("matchesDefaultSlug", () => {
+  it("matches a fork by its source_default_slug", () => {
+    expect(
+      matchesDefaultSlug(
+        { slug: null, source_default_slug: "default-conciseness" },
+        "default-conciseness",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not match a different slug", () => {
+    expect(
+      matchesDefaultSlug({ source_default_slug: "default-conciseness" }, "x"),
+    ).toBe(false);
+  });
+});
+
+describe("isDefaultLLMNextReplyEvaluator", () => {
+  it("matches an unforked seed via slug", () => {
+    expect(
+      isDefaultLLMNextReplyEvaluator({ slug: DEFAULT_LLM_NEXT_REPLY_SLUG }),
+    ).toBe(true);
+  });
+
+  it("matches an org fork via source_default_slug (slug nulled)", () => {
+    expect(
+      isDefaultLLMNextReplyEvaluator({
+        slug: null,
+        source_default_slug: DEFAULT_LLM_NEXT_REPLY_SLUG,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match a different default", () => {
+    expect(
+      isDefaultLLMNextReplyEvaluator({
+        slug: null,
+        source_default_slug: "default-conciseness",
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("fetchDefaultLLMNextReplyEvaluator", () => {
   const backendUrl = "https://api.example.com";
@@ -68,6 +133,24 @@ describe("fetchDefaultLLMNextReplyEvaluator", () => {
     const result = await fetchDefaultLLMNextReplyEvaluator(backendUrl, accessToken);
 
     expect(result).toEqual(evaluator);
+  });
+
+  it("returns the org fork whose slug is nulled but source_default_slug matches", async () => {
+    const fork = {
+      uuid: "1",
+      name: "Correctness",
+      slug: null,
+      source_default_slug: DEFAULT_LLM_NEXT_REPLY_SLUG,
+      evaluator_type: "llm",
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [fork] }),
+    }) as unknown as typeof fetch;
+
+    const result = await fetchDefaultLLMNextReplyEvaluator(backendUrl, accessToken);
+
+    expect(result).toEqual(fork);
   });
 
   it("does not match when slug matches but evaluator_type does not", async () => {

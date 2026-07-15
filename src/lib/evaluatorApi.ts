@@ -15,12 +15,12 @@ export type EvaluatorData = {
   created_at: string;
   updated_at: string;
   /**
-   * Present on the top-level `/evaluators` list (null for built-in defaults).
-   * NOT returned by `GET /agents/{uuid}/evaluators`, which sends `is_default`
-   * instead — use `isOwnedEvaluator()` to decide ownership across both shapes.
+   * Returned by the list API but no longer meaningful for categorization: it's
+   * set on EVERY evaluator now (defaults are per-org forks that carry an owner),
+   * so it can't distinguish default from custom — use `is_default` for that.
    */
   owner_user_id?: string | null;
-  /** True for built-in default evaluators. Returned by the agent list. */
+  /** True for org default (forked seed) evaluators. The ONLY default marker. */
   is_default?: boolean;
   data_type?: "text" | "audio";
   kind?: "single" | "side_by_side";
@@ -29,13 +29,26 @@ export type EvaluatorData = {
 };
 
 /**
- * Whether the current user owns this evaluator (i.e. can delete/edit it),
- * tolerating both list shapes: the agent list exposes `is_default`, the
- * top-level `/evaluators` list exposes `owner_user_id` (null = built-in).
+ * Whether this is an org default (a forked seed). `is_default` is the sole
+ * discriminator — `owner_user_id` is now set on every evaluator (defaults are
+ * per-org forks) so it can't be used. This is the ONE place the default vs
+ * custom test lives; every list/picker/pre-select site must call this (or its
+ * inverse `isOwnedEvaluator`) rather than re-reading `is_default` inline, so a
+ * future change to the marker is a single edit here.
+ *
+ * Accepts any object exposing `is_default` so the STT/TTS/test pickers can pass
+ * their trimmed row shapes, not just the full `EvaluatorData`.
+ *
+ * NOTE: categorization only — NOT a permissions check. Org defaults are
+ * editable/deletable forks, so edit/delete/new-version are allowed on both.
  */
-export function isOwnedEvaluator(e: EvaluatorData): boolean {
-  if (typeof e.is_default === "boolean") return !e.is_default;
-  return !!e.owner_user_id;
+export function isDefaultEvaluator(e: { is_default?: boolean | null }): boolean {
+  return !!e.is_default;
+}
+
+/** Whether this is a user-created (custom) evaluator — the inverse of default. */
+export function isOwnedEvaluator(e: { is_default?: boolean | null }): boolean {
+  return !isDefaultEvaluator(e);
 }
 
 /**

@@ -1,6 +1,7 @@
 "use client";
 import { reportError } from "@/lib/reportError";
 import { unwrapList } from "@/lib/api";
+import { isDefaultEvaluator } from "@/lib/evaluatorApi";
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -267,7 +268,7 @@ export default function TTSEvaluationDetailPage() {
           uuid: string;
           name: string;
           description?: string | null;
-          owner_user_id?: string | null;
+          is_default?: boolean;
           evaluator_type?: string;
         }>(data)
           .filter((m) => m.evaluator_type === "tts")
@@ -275,7 +276,7 @@ export default function TTSEvaluationDetailPage() {
             uuid: m.uuid,
             name: m.name,
             description: m.description ?? null,
-            isDefault: !m.owner_user_id,
+            isDefault: isDefaultEvaluator(m),
           }));
         setTtsEvaluators(items);
       } catch (err) {
