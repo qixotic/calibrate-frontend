@@ -1,7 +1,6 @@
 "use client";
 import { reportError } from "@/lib/reportError";
 import { unwrapList } from "@/lib/api";
-import { isDefaultEvaluator } from "@/lib/evaluatorApi";
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -157,17 +156,15 @@ export function SpeechToTextEvaluation({
   const [datasetName, setDatasetName] = useState("");
   const [datasetNameInvalid, setDatasetNameInvalid] = useState(false);
 
-  // Evaluators (filtered to STT purpose). Org defaults (`is_default`) are
-  // pre-selected on first load — see /evaluators page for the same
-  // default vs my-evaluators distinction.
+  // Evaluators (filtered to STT purpose). None are pre-selected — the user
+  // chooses which (if any) to add, since STT evaluations no longer require an
+  // evaluator.
   const [availableEvaluators, setAvailableEvaluators] = useState<PickerItem[]>([]);
   const [selectedEvaluators, setSelectedEvaluators] = useState<PickerItem[]>([]);
   const [evaluatorsLoading, setEvaluatorsLoading] = useState(false);
-  const [evaluatorsInvalid, setEvaluatorsInvalid] = useState(false);
 
   const handleEvaluatorsChange = (items: PickerItem[]) => {
     setSelectedEvaluators(items);
-    if (items.length > 0) setEvaluatorsInvalid(false);
   };
 
   useEffect(() => {
@@ -214,38 +211,22 @@ export function SpeechToTextEvaluation({
         }
 
         const data = await response.json();
-        const sttEvaluators: (PickerItem & { isDefault: boolean })[] =
-          unwrapList<{
-            uuid: string;
-            name: string;
-            description?: string;
-            is_default?: boolean;
-            evaluator_type?: string;
-          }>(data)
-            .filter((m) => m.evaluator_type === "stt")
-            .map((m) => ({
-              uuid: m.uuid,
-              name: m.name,
-              description: m.description,
-              isDefault: isDefaultEvaluator(m),
-            }));
+        const sttEvaluators: PickerItem[] = unwrapList<{
+          uuid: string;
+          name: string;
+          description?: string;
+          evaluator_type?: string;
+        }>(data)
+          .filter((m) => m.evaluator_type === "stt")
+          .map((m) => ({
+            uuid: m.uuid,
+            name: m.name,
+            description: m.description,
+          }));
 
-        setAvailableEvaluators(
-          sttEvaluators.map(({ uuid, name, description }) => ({
-            uuid,
-            name,
-            description,
-          })),
-        );
-        setSelectedEvaluators(
-          sttEvaluators
-            .filter((e) => e.isDefault)
-            .map(({ uuid, name, description }) => ({
-              uuid,
-              name,
-              description,
-            })),
-        );
+        // Show every STT evaluator but pre-select none — adding an evaluator
+        // is entirely opt-in.
+        setAvailableEvaluators(sttEvaluators);
       } catch (err) {
         reportError("Error fetching evaluators:", err);
       } finally {
@@ -292,13 +273,6 @@ export function SpeechToTextEvaluation({
       return;
     }
 
-    // Validate evaluators
-    if (selectedEvaluators.length === 0) {
-      setEvaluatorsInvalid(true);
-      setActiveTab("settings");
-      return;
-    }
-
     if (inputMode === "dataset") {
       if (!selectedDatasetId) {
         setActiveTab("input");
@@ -321,7 +295,6 @@ export function SpeechToTextEvaluation({
     }
 
     setProvidersInvalid(false);
-    setEvaluatorsInvalid(false);
     setIsEvaluating(true);
 
     try {
@@ -809,17 +782,13 @@ export function SpeechToTextEvaluation({
       {/* Settings Tab Content */}
       <div className={activeTab === "settings" ? "space-y-8" : "hidden"}>
           {/* Evaluator Selection */}
-          <div
-            className={`space-y-3 p-4 -m-4 rounded-lg transition-colors ${
-              evaluatorsInvalid ? "bg-red-500/10 border border-red-500" : ""
-            }`}
-          >
+          <div className="space-y-3">
             <div className="flex items-center gap-2">
               <h3 className="text-[13px] font-medium text-foreground">
                 Select evaluators
               </h3>
               <span className="text-[12px] text-muted-foreground">
-                ({selectedEvaluators.length} selected)
+                (optional · {selectedEvaluators.length} selected)
               </span>
             </div>
             {/* WER is a built-in STT metric computed on every run regardless of

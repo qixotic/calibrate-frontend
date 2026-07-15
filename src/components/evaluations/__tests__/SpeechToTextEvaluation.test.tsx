@@ -169,15 +169,18 @@ describe("SpeechToTextEvaluation", () => {
     await waitFor(() => expect(screen.getByTestId("evaluator-e1")).toBeInTheDocument());
   });
 
-  it("fetches and splits evaluators into available + pre-selected defaults", async () => {
+  it("lists STT evaluators (excluding other types) with none pre-selected", async () => {
     const user = setupUser();
     render(<SpeechToTextEvaluation />);
     await user.click(screen.getByText("Settings"));
     await waitFor(() => {
       expect(screen.getByTestId("evaluator-e1")).toBeInTheDocument();
     });
+    // Non-STT evaluators are filtered out.
     expect(screen.queryByTestId("evaluator-e3")).not.toBeInTheDocument();
-    expect(screen.getByTestId("evaluator-e1")).toHaveAttribute("aria-pressed", "true");
+    // Nothing is pre-selected — adding an evaluator is entirely opt-in, so even
+    // an org-default evaluator starts unchecked.
+    expect(screen.getByTestId("evaluator-e1")).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByTestId("evaluator-e2")).toHaveAttribute("aria-pressed", "false");
   });
 
@@ -263,7 +266,7 @@ describe("SpeechToTextEvaluation", () => {
     expect(screen.getByText("Language")).toBeInTheDocument();
   });
 
-  it("validates evaluators are selected before proceeding", async () => {
+  it("allows evaluate to proceed with no evaluators selected (evaluators are optional)", async () => {
     const user = setupUser();
     const evaluateRef = { current: null as (() => void) | null };
     render(<SpeechToTextEvaluation evaluateRef={evaluateRef} />);
@@ -277,7 +280,10 @@ describe("SpeechToTextEvaluation", () => {
       evaluateRef.current?.();
     });
 
-    expect(screen.getByText("Language")).toBeInTheDocument();
+    // Evaluators no longer gate the flow — it advances past them to the
+    // dataset-name validation (inline mode), turning the name field red.
+    const input = screen.getByPlaceholderText("e.g. English customer calls");
+    expect(input.className).toMatch(/border-red-500/);
   });
 
   it("shows a toast and blocks evaluate when dataset mode has no dataset selected", async () => {
