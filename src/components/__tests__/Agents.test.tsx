@@ -6,6 +6,7 @@ const useAccessTokenMock = jest.fn();
 
 jest.mock("../../hooks", () => ({
   __esModule: true,
+  ...jest.requireActual("../../hooks"),
   useAccessToken: () => useAccessTokenMock(),
 }));
 
@@ -146,6 +147,9 @@ describe("Agents", () => {
     await user.type(screen.getByPlaceholderText("Search agents"), "Connect");
     expect(screen.queryAllByText("Support Bot")).toHaveLength(0);
     expect(screen.getAllByText("Connect Bot")[0]).toBeInTheDocument();
+    // The count reflects the filtered list, not the full set.
+    expect(screen.getByText("1 agent")).toBeInTheDocument();
+    expect(screen.queryByText("2 agents")).not.toBeInTheDocument();
   });
 
   it("toggles sort order when clicking the sort button", async () => {
@@ -379,6 +383,107 @@ describe("Agents", () => {
     await waitFor(() =>
       expect(screen.queryAllByText("Connect Bot")).toHaveLength(0),
     );
+  });
+
+  it("bulk-deletes selected agents via select-all and the bulk bar", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      jsonResponse(agentsPayload),
+    );
+    const user = setupUser();
+    render(<Agents />);
+    await waitFor(() =>
+      expect(screen.getAllByText("Support Bot")[0]).toBeInTheDocument(),
+    );
+
+    // Select every agent through the header select-all checkbox.
+    await user.click(screen.getByLabelText("Select all agents"));
+
+    const bulkButton = screen.getByRole("button", {
+      name: /Delete selected \(2\)/,
+    });
+    await user.click(bulkButton);
+
+    expect(
+      screen.getByText(/Are you sure you want to delete 2 agents/),
+    ).toBeInTheDocument();
+
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      jsonResponse({ deleted_count: 2 }),
+    );
+    const confirmButtons = screen.getAllByRole("button", { name: "Delete" });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(screen.queryAllByText("Support Bot")).toHaveLength(0),
+    );
+    // The bulk call hits the bulk-delete endpoint with the selected uuids.
+    const bulkCall = (global.fetch as jest.Mock).mock.calls.find(([url]) =>
+      String(url).endsWith("/agents/bulk-delete"),
+    );
+    expect(bulkCall).toBeTruthy();
+    expect(JSON.parse(bulkCall[1].body)).toEqual({
+      agent_uuids: ["a2", "a1"],
+    });
+  });
+
+  it("drops selection for agents hidden by a search so they aren't bulk-deleted", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      jsonResponse(agentsPayload),
+    );
+    const user = setupUser();
+    render(<Agents />);
+    await waitFor(() =>
+      expect(screen.getAllByText("Support Bot")[0]).toBeInTheDocument(),
+    );
+
+    // Select every agent, then narrow the search to hide "Support Bot".
+    await user.click(screen.getByLabelText("Select all agents"));
+    expect(
+      screen.getByRole("button", { name: /Delete selected \(2\)/ }),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Search agents"), "Connect");
+
+    // The hidden agent is dropped from the selection, so only 1 remains.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Delete selected \(1\)/ }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Delete selected \(2\)/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces a 404 all-or-nothing rejection during bulk delete", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      jsonResponse(agentsPayload),
+    );
+    const user = setupUser();
+    render(<Agents />);
+    await waitFor(() =>
+      expect(screen.getAllByText("Support Bot")[0]).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByLabelText("Select all agents"));
+    await user.click(
+      screen.getByRole("button", { name: /Delete selected \(2\)/ }),
+    );
+
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      jsonResponse(
+        { detail: { message: "missing", not_found: ["a2"] } },
+        { ok: false, status: 404 },
+      ),
+    );
+    const confirmButtons = screen.getAllByRole("button", { name: "Delete" });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(screen.getByText(/no longer available/)).toBeInTheDocument(),
+    );
+    // Nothing was removed.
+    expect(screen.getAllByText("Support Bot")[0]).toBeInTheDocument();
   });
 
   it("signs out on 401 while deleting, and reports error on generic failure", async () => {
