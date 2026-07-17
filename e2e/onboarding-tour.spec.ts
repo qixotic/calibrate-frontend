@@ -60,8 +60,19 @@ type TestPayload = {
 
 const ISO = "2026-07-16T00:00:00Z";
 
+// The tour reuses Correctness only if its live prompt EXACTLY equals the
+// hard-coded canonical prompt in firstEval.ts (CANONICAL_CORRECTNESS_PROMPT).
+// This must be kept byte-identical to that constant so the mocked Correctness is
+// reused (not recreated) during the tour.
+const CORRECTNESS_LIVE_PROMPT =
+  "You are a highly accurate evaluator evaluating the response of an agent to a " +
+  "user's message.\n\nYou will be given a conversation between a user and an " +
+  "agent along with the response of the agent to the final user message.\n\nYou " +
+  "need to evaluate if the response adheres to the evaluation criteria:\n\n" +
+  "{{criteria}}";
+
 // Two LLM-reply evaluators: one "Correctness" (the default next-reply slug the
-// dialog seeds), one "Tone & helpfulness" (a complementary dimension). Both are
+// dialog seeds), one "Reply Conciseness" (the second check the flow adds). Both are
 // evaluator_type "llm" so they render the "LLM reply" pill AND actually grade a
 // next-reply test — the exact property the tour's picker now depends on.
 const LIBRARY_EVALUATORS: EvaluatorPayload[] = [
@@ -80,10 +91,10 @@ const LIBRARY_EVALUATORS: EvaluatorPayload[] = [
     updated_at: ISO,
   },
   {
-    uuid: "ev-tone",
-    name: "Tone & helpfulness",
-    description: "Stays kind and clear",
-    slug: "default-llm-tone",
+    uuid: "ev-concise",
+    name: "Reply Conciseness",
+    description: "Is the reply concise?",
+    slug: "reply-conciseness",
     is_default: true,
     evaluator_type: "llm",
     output_type: "binary",
@@ -121,9 +132,9 @@ const RUN_EVALUATORS = [
     version_number: 1,
   },
   {
-    uuid: "ev-tone",
-    name: "Tone & helpfulness",
-    description: "Stays kind and clear",
+    uuid: "ev-concise",
+    name: "Reply Conciseness",
+    description: "Is the reply concise?",
     output_type: "binary",
     version_number: 1,
   },
@@ -161,12 +172,12 @@ function caseResult(opts: {
         variable_values: { criteria: opts.criteria },
       },
       {
-        evaluator_uuid: "ev-tone",
+        evaluator_uuid: "ev-concise",
         match: true,
         value_name: "Pass",
-        reasoning: "The tone is friendly and clear.",
+        reasoning: "The reply is concise and to the point.",
         variable_values: {
-          criteria: "Stays warm and kind, and is easy to understand.",
+          criteria: "The reply is concise and free of rambling or filler.",
         },
       },
     ],
@@ -278,8 +289,10 @@ async function installFakeBackend(page: Page, appOrigin: string): Promise<void> 
         return json(route, {
           uuid: AGENT_UUID,
           name: "Community Clinic Helpline",
+          // The default a freshly created agent loads with — this is what raced
+          // with (and clobbered) the tour's sample fill. The tour must win.
           type: "agent",
-          config: { system_prompt: "" },
+          config: { system_prompt: "You are a helpful assistant." },
           created_at: ISO,
           updated_at: ISO,
         });
@@ -310,6 +323,21 @@ async function installFakeBackend(page: Page, appOrigin: string): Promise<void> 
       // --- Evaluator library ---
       if (method === "GET" && pathname === "/evaluators") {
         return json(route, LIBRARY_EVALUATORS);
+      }
+      // Only the judge model is read from here now (the prompt is hard-coded in
+      // the tour); used solely on the recreate path, which reuse avoids.
+      if (method === "GET" && pathname === "/evaluators/default-prompt") {
+        return json(route, {
+          judge_model: "openai/gpt-5.4-mini",
+          output_type: "binary",
+        });
+      }
+      // Evaluator detail — the reuse check reads the live version's prompt.
+      if (method === "GET" && /^\/evaluators\/[^/]+$/.test(pathname)) {
+        return json(route, {
+          versions: [{ uuid: "v1", system_prompt: CORRECTNESS_LIVE_PROMPT }],
+          live_version_index: 0,
+        });
       }
 
       // --- Tools (unused by the tour, but the pages fetch them) ---
@@ -391,11 +419,11 @@ const STEPS: { title: string; auto?: boolean }[] = [
   { title: "Save your work" },
   { title: "Add an evaluator" },
   { title: "Choose what to check" },
-  { title: "Add another dimension" },
+  { title: "Add another check" },
   { title: "Add them to your agent" },
   { title: "Create your first test" },
   { title: "The scenario" },
-  { title: "Two dimensions, one test" },
+  { title: "How your test is graded" },
   { title: "Add a test it should fail" },
   { title: "A scenario it cannot answer" },
   { title: "Require what it cannot give" },
@@ -486,12 +514,19 @@ test.describe("Onboarding flagship tour (fully mocked, no backend)", () => {
         });
         // Exactly one popover — no orphan left over from the create-navigation.
         await expect(page.locator(".driver-popover")).toHaveCount(1);
-      }
-      if (step.title === "Add another dimension") {
-        // Correctness is ticked; the picker highlights the just-picked row.
+        // The tour's sample must win over the agent's async-loaded default
+        // ("You are a helpful assistant.") — the clobber this guards against.
         await expect(
-          page.locator('[data-tour="add-evaluators-dialog"]'),
-        ).toBeVisible();
+          page.locator('[data-tour="agent-system-prompt"]'),
+        ).toHaveValue(/community health clinic/i, { timeout: 10000 });
+      }
+      if (step.title === "Add another check") {
+        // Correctness is ticked; the picker highlights the just-picked row.
+        const dialog = page.locator('[data-tour="add-evaluators-dialog"]');
+        await expect(dialog).toBeVisible();
+        // The flow is locked to the card: the spotlighted dialog is marked
+        // non-interactive, so the user can't close it and desync the tour.
+        await expect(dialog).toHaveClass(/driver-no-interaction/);
       }
       if (step.title === "Review your failed test") {
         // The first (failed) result row is the phone-number test.
