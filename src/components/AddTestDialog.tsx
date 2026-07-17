@@ -16,10 +16,7 @@ import { isDefaultLLMNextReplyEvaluator } from "@/lib/defaultEvaluators";
 import { isDefaultEvaluator, isOwnedEvaluator } from "@/lib/evaluatorApi";
 import { ToolPicker, AvailableTool } from "@/components/ToolPicker";
 import { NestedContainer } from "@/components/ui/NestedContainer";
-import {
-  readToolParameters,
-  NormalizedToolParam,
-} from "@/lib/toolParams";
+import { readToolParameters, NormalizedToolParam } from "@/lib/toolParams";
 import { INBUILT_TOOLS } from "@/constants/inbuilt-tools";
 import { useHideFloatingButton } from "@/components/AppLayout";
 import { formatTurnTimestamp } from "@/components/test-results/shared";
@@ -86,7 +83,12 @@ type ExpectedParam = {
 // containing a `match_type` key is always a spec.
 const parseArgMatch = (
   v: any,
-): { matchType: MatchType; value: any; criteria: string; judgeModel?: string } => {
+): {
+  matchType: MatchType;
+  value: any;
+  criteria: string;
+  judgeModel?: string;
+} => {
   if (
     v !== null &&
     typeof v === "object" &&
@@ -98,7 +100,8 @@ const parseArgMatch = (
         matchType: "llm_judge",
         value: undefined,
         criteria: typeof v.criteria === "string" ? v.criteria : "",
-        judgeModel: typeof v.judge_model === "string" ? v.judge_model : undefined,
+        judgeModel:
+          typeof v.judge_model === "string" ? v.judge_model : undefined,
       };
     }
     if (v.match_type === "any") {
@@ -222,9 +225,7 @@ const buildExpectedParamsFromToolConfig = (
 // start out unselected (offered as add-back chips); only required ones are
 // shown. If a level has no required params at all, the first one is selected so
 // the form isn't empty. Applied recursively to nested object properties.
-const defaultSelectedParams = (
-  params: ExpectedParam[],
-): ExpectedParam[] => {
+const defaultSelectedParams = (params: ExpectedParam[]): ExpectedParam[] => {
   const required = params.filter((p) => p.required);
   const chosen = required.length > 0 ? required : params.slice(0, 1);
   return chosen.map((p) =>
@@ -591,7 +592,8 @@ function AddBackChips({
 // structured-output tools default to a minimal acknowledgement. Hoisted to
 // constants so the value is identical across the load-synthesis path, the
 // "add tool call" path, and the textarea placeholder.
-const DEFAULT_WEBHOOK_RESPONSE = '{\n  "status": "success",\n  "response": {}\n}';
+const DEFAULT_WEBHOOK_RESPONSE =
+  '{\n  "status": "success",\n  "response": {}\n}';
 const DEFAULT_STRUCTURED_RESPONSE = '{\n  "status": "received"\n}';
 const RESPONSE_PLACEHOLDER = `// any valid JSON value\n${DEFAULT_WEBHOOK_RESPONSE}`;
 
@@ -684,7 +686,6 @@ export type EvaluatorRefPayload = {
   variable_values?: Record<string, string>;
 };
 
-
 type AttachedEvaluator = {
   evaluator_uuid: string;
   name: string;
@@ -726,7 +727,11 @@ type AddTestDialogProps = {
   itemDescription?: string;
   setItemDescription?: (description: string) => void;
   validationAttempted: boolean;
-  onSubmit: (config: TestConfig, evaluators: EvaluatorRefPayload[]) => void;
+  onSubmit: (
+    config: TestConfig,
+    evaluators: EvaluatorRefPayload[],
+    options?: { runAfterSave?: boolean },
+  ) => void;
   initialTab?: "next-reply" | "tool-invocation" | "conversation";
   initialConfig?: TestConfig;
   initialEvaluators?: AttachedEvaluatorInit[];
@@ -764,6 +769,31 @@ type AddTestDialogProps = {
    * `agent_response` being judged. Takes precedence over `allowAgentLastMessage`.
    */
   requireAssistantLastMessage?: boolean;
+  /**
+   * When true, the footer shows an extra "Run test" button next to the
+   * primary Save action. Only offered in the default `mode === "test"` flow.
+   * Set by the agent Tests tab (runs against that agent) and the standalone
+   * tests page (which opens an agent picker first); labelling-item callers
+   * leave it unset.
+   *
+   * Run semantics (Save and Run stay separate actions):
+   * - Editing with NO unsaved edits → runs the already-saved test directly
+   *   via `onRun` (no save).
+   * - Editing WITH unsaved edits → prompts: "Save and run" (saves via
+   *   `onSubmit({ runAfterSave: true })` then runs) or "Discard and run"
+   *   (runs the saved version via `onRun`, dropping the edits).
+   * - Creating → there's no saved version, so it always creates and runs via
+   *   `onSubmit({ runAfterSave: true })`.
+   */
+  showRunAfterSave?: boolean;
+  /**
+   * Runs the currently-saved test without saving the form. Used for the
+   * "run directly" and "discard and run" paths above. The parent is
+   * responsible for closing this dialog and opening its runner. Required
+   * (alongside `showRunAfterSave`) for the run button to fully work when
+   * editing; create-only contexts may omit it.
+   */
+  onRun?: () => void;
 };
 
 export function AddTestDialog({
@@ -788,6 +818,8 @@ export function AddTestDialog({
   mode = "test",
   allowAgentLastMessage = false,
   requireAssistantLastMessage = false,
+  showRunAfterSave = false,
+  onRun,
 }: AddTestDialogProps) {
   // Hide the floating "Talk to Us" button when this dialog is open
   useHideFloatingButton(isOpen);
@@ -1148,6 +1180,10 @@ export function AddTestDialog({
 
   const [localValidationAttempted, setLocalValidationAttempted] =
     useState(false);
+  // Which footer action fired the in-flight save, so the spinner shows on the
+  // button the user actually clicked ("Save" vs. "Save and run"). Reset once
+  // the save settles (the dialog either closes or surfaces an error).
+  const [submitRunAfterSave, setSubmitRunAfterSave] = useState(false);
   // Dialog-level message for failed tool-call validation (e.g. an unset boolean
   // or an incomplete parameter). Shown in the footer; cleared on each attempt.
   const [toolValidationError, setToolValidationError] = useState<string | null>(
@@ -1321,6 +1357,9 @@ export function AddTestDialog({
     params: Array<{ name: string; value: string }>;
   } | null>(null);
   const [showCloseConfirmation, setShowCloseConfirmation] = useState(false);
+  // Shown when the user hits "Run test" while editing with unsaved edits:
+  // asks whether to save-then-run or discard-and-run the saved version.
+  const [showRunUnsavedConfirm, setShowRunUnsavedConfirm] = useState(false);
 
   // Discard-guard baseline. `baselineRef` holds a serialized snapshot of the
   // form's canonical (would-be-saved) content, captured once the dialog has
@@ -1837,9 +1876,7 @@ export function AddTestDialog({
     // the scroll target *inside* the setState updater and reading it back on
     // the next line is unreliable — the updater runs after this function
     // returns, so the target was often still null and the scroll never fired.
-    const existing = new Set(
-      attachedEvaluators.map((e) => e.evaluator_uuid),
-    );
+    const existing = new Set(attachedEvaluators.map((e) => e.evaluator_uuid));
     const toAdd = options.filter((option) => !existing.has(option.uuid));
     if (toAdd.length === 0) {
       closeEvaluatorPicker();
@@ -1956,7 +1993,11 @@ export function AddTestDialog({
       }));
       return;
     }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
       setToolJsonError((prev) => ({
         ...prev,
         [tool.id]: "The top-level value must be a JSON object of parameters.",
@@ -2208,15 +2249,17 @@ export function AddTestDialog({
       <select
         value={mode}
         onChange={(e) =>
-          updateExpectedParamMatchMode(toolId, path, e.target.value as MatchMode)
+          updateExpectedParamMatchMode(
+            toolId,
+            path,
+            e.target.value as MatchMode,
+          )
         }
         aria-label="Match mode"
         className="h-10 pl-3 pr-8 rounded-lg text-sm font-medium bg-foreground text-background border border-transparent hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent cursor-pointer appearance-none transition-opacity"
       >
         <option value="exact">Is exactly</option>
-        {allowLlm && (
-          <option value="llm_judge">satisfies the criteria</option>
-        )}
+        {allowLlm && <option value="llm_judge">satisfies the criteria</option>}
         <option value="null">Is null</option>
         <option value="any">Is any</option>
       </select>
@@ -2418,7 +2461,8 @@ export function AddTestDialog({
                   <div className="flex-1" />
                   {collapseToggle}
                   {renderRequiredBadge(param.required)}
-                  {!param.required && renderRemoveParamButton(toolId, paramPath)}
+                  {!param.required &&
+                    renderRemoveParamButton(toolId, paramPath)}
                 </div>
                 {renderParamNameInput(toolId, paramPath, param.name, nameError)}
               </>
@@ -2503,7 +2547,8 @@ export function AddTestDialog({
       const missingValue =
         !leafFilled &&
         (param.required || (!param.custom ? true : !!param.name.trim()));
-      const valueError = showErrors && (missingValue || typeError || booleanUnset);
+      const valueError =
+        showErrors && (missingValue || typeError || booleanUnset);
       const fieldClass = `w-full h-10 px-4 rounded-lg text-sm bg-background text-foreground placeholder:text-muted-foreground border focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed ${
         valueError ? "border-red-500" : "border-border"
       }`;
@@ -2524,7 +2569,11 @@ export function AddTestDialog({
                   <select
                     value={booleanUnset ? "" : param.value}
                     onChange={(e) =>
-                      updateExpectedParamValue(toolId, paramPath, e.target.value)
+                      updateExpectedParamValue(
+                        toolId,
+                        paramPath,
+                        e.target.value,
+                      )
                     }
                     className={`${fieldClass} pr-10 cursor-pointer appearance-none`}
                   >
@@ -2571,10 +2620,9 @@ export function AddTestDialog({
                   placeholder="e.g. A friendly reminder with the date"
                   className={`${fieldClass} flex-1 min-w-0`}
                 />
-              ) : isNull || isAny ? (
-                // "Is null" / "Is any" assert presence only — no value box.
-                null
-              ) : (
+              ) : isNull ||
+                isAny ? // "Is null" / "Is any" assert presence only — no value box.
+              null : (
                 <input
                   type="text"
                   value={param.value}
@@ -2602,8 +2650,8 @@ export function AddTestDialog({
           )}
           {showErrors && typeError && (
             <p className="text-xs text-red-500">
-              Enter a valid {param.dataType === "integer" ? "integer" : "number"}
-              .
+              Enter a valid{" "}
+              {param.dataType === "integer" ? "integer" : "number"}.
             </p>
           )}
         </div>
@@ -2816,8 +2864,11 @@ export function AddTestDialog({
     return false;
   };
 
-  // Handle form submission
-  const handleSubmit = () => {
+  // Handle form submission. `runAfterSave` is set by the "Save and run" /
+  // "Create and run" footer button; it's forwarded to the parent so it can
+  // open the test runner once the save persists.
+  const handleSubmit = (runAfterSave = false) => {
+    setSubmitRunAfterSave(runAfterSave);
     setLocalValidationAttempted(true);
     setToolValidationError(null);
 
@@ -2889,7 +2940,44 @@ export function AddTestDialog({
 
     const config = buildConfig();
     const evaluators = buildEvaluatorsPayload();
-    onSubmit(config, evaluators);
+    onSubmit(config, evaluators, { runAfterSave });
+  };
+
+  // True when the form differs from the post-load baseline (i.e. there are
+  // unsaved edits). A just-loaded, untouched form is NOT changed: until the
+  // baseline is captured there can't be user edits yet (the Run button is
+  // disabled while the test is still loading), so a null baseline counts as
+  // clean rather than prompting spuriously.
+  const hasUnsavedEdits = () =>
+    baselineRef.current !== null &&
+    serializeFormState() !== baselineRef.current;
+
+  // "Run test" button. Save and Run stay separate: this never force-saves a
+  // clean form. Creating always creates-and-runs (no saved version exists);
+  // editing runs the saved test directly when clean, and prompts when dirty.
+  const handleRunClick = () => {
+    if (!isEditing) {
+      handleSubmit(true);
+      return;
+    }
+    if (hasUnsavedEdits()) {
+      setShowRunUnsavedConfirm(true);
+      return;
+    }
+    // Clean edit: run the already-saved test without a save round-trip.
+    if (onRun) onRun();
+    else handleSubmit(true);
+  };
+
+  const handleSaveAndRunFromPrompt = () => {
+    setShowRunUnsavedConfirm(false);
+    handleSubmit(true);
+  };
+
+  const handleDiscardAndRunFromPrompt = () => {
+    setShowRunUnsavedConfirm(false);
+    if (onRun) onRun();
+    else handleSubmit(true);
   };
 
   const handleBackdropClick = () => {
@@ -3013,6 +3101,59 @@ export function AddTestDialog({
                 className="h-10 px-4 rounded-lg text-sm font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
               >
                 Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Run-with-unsaved-changes confirmation. Only reachable while editing
+          with unsaved edits; offers save-then-run or discard-and-run. */}
+      {showRunUnsavedConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setShowRunUnsavedConfirm(false)}
+          />
+          <div className="relative bg-background rounded-2xl shadow-2xl border border-border p-6 max-w-lg w-full mx-4">
+            <button
+              onClick={() => setShowRunUnsavedConfirm(false)}
+              className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+              aria-label="Cancel"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+            <h3 className="text-lg font-semibold text-foreground mb-1 pr-8">
+              Unsaved changes
+            </h3>
+            <p className="text-sm text-muted-foreground mb-6">
+              Do you want to discard your changes and run the test with the last
+              saved version?
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={handleDiscardAndRunFromPrompt}
+                className="h-10 px-4 rounded-lg text-sm font-medium whitespace-nowrap bg-background text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer border border-red-500/40"
+              >
+                Discard and run
+              </button>
+              <button
+                onClick={handleSaveAndRunFromPrompt}
+                className="h-10 px-4 rounded-lg text-sm font-medium whitespace-nowrap bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer"
+              >
+                Save and run
               </button>
             </div>
           </div>
@@ -3151,7 +3292,7 @@ export function AddTestDialog({
                       <label className="text-base font-medium text-foreground">
                         Evaluators
                       </label>
-                      {!isLabelItem && (
+                      {!isLabelItem &&
                         (() => {
                           const remainingOptions =
                             availableLLMEvaluators.filter(
@@ -3164,8 +3305,7 @@ export function AddTestDialog({
                                     CONVERSATION_EVALUATOR_TYPE
                                   : o.evaluator_type === "llm"),
                             );
-                          const noOptionsLeft =
-                            remainingOptions.length === 0;
+                          const noOptionsLeft = remainingOptions.length === 0;
                           return (
                             <button
                               onClick={() => {
@@ -3177,9 +3317,7 @@ export function AddTestDialog({
                                 }
                               }}
                               disabled={
-                                evaluatorsLoading ||
-                                isLoading ||
-                                noOptionsLeft
+                                evaluatorsLoading || isLoading || noOptionsLeft
                               }
                               // Tinted violet so the action stands out from
                               // the neutral form chrome around it. Validation
@@ -3195,8 +3333,7 @@ export function AddTestDialog({
                               Add evaluator
                             </button>
                           );
-                        })()
-                      )}
+                        })()}
                     </div>
 
                     {/* Evaluator picker dropdown */}
@@ -3248,7 +3385,8 @@ export function AddTestDialog({
                                   </div>
                                 );
                               }
-                              const defaults = matches.filter(isDefaultEvaluator);
+                              const defaults =
+                                matches.filter(isDefaultEvaluator);
                               const mine = matches.filter(isOwnedEvaluator);
                               const showSections =
                                 defaults.length > 0 && mine.length > 0;
@@ -3309,9 +3447,10 @@ export function AddTestDialog({
                             <button
                               type="button"
                               onClick={() => {
-                                const selected = getAvailablePickerEvaluators().filter(
-                                  (o) => evaluatorPickerSelectedIds.has(o.uuid),
-                                );
+                                const selected =
+                                  getAvailablePickerEvaluators().filter((o) =>
+                                    evaluatorPickerSelectedIds.has(o.uuid),
+                                  );
                                 attachEvaluatorsFromOptions(selected);
                               }}
                               disabled={evaluatorPickerSelectedIds.size === 0}
@@ -3677,7 +3816,9 @@ export function AddTestDialog({
                                         </button>
                                         <button
                                           type="button"
-                                          onClick={() => enterToolJsonMode(tool)}
+                                          onClick={() =>
+                                            enterToolJsonMode(tool)
+                                          }
                                           className={`h-7 px-3 rounded-md text-xs font-medium transition-colors cursor-pointer ${
                                             jsonModeToolIds.has(tool.id)
                                               ? "bg-foreground text-background"
@@ -3805,35 +3946,68 @@ export function AddTestDialog({
                     : `The conversation history should end with a user message, not an agent message`;
                   const isButtonDisabled =
                     isCreating || isLoading || isLastMessageInvalid;
+                  // The "Save and run" shortcut is only offered in the default
+                  // test flow (not labelling items) when the parent can run.
+                  const canRunAfterSave = showRunAfterSave && !isLabelItem;
+                  const spinner = (
+                    <svg
+                      className="w-4 h-4 animate-spin"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                  );
 
                   return (
-                    <div className="relative group">
+                    <div className="relative group flex items-center gap-2">
+                      {canRunAfterSave && (
+                        <button
+                          onClick={handleRunClick}
+                          disabled={isButtonDisabled}
+                          title="Run this test"
+                          className="h-9 md:h-10 px-3 md:px-4 rounded-lg text-sm md:text-base font-medium border transition-colors flex items-center gap-2 bg-sky-500/12 border-sky-500/45 text-sky-950 dark:text-sky-100 hover:bg-sky-500/22 dark:hover:bg-sky-500/18 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isCreating && submitRunAfterSave ? (
+                            spinner
+                          ) : (
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"
+                              />
+                            </svg>
+                          )}
+                          Run test
+                        </button>
+                      )}
                       <button
-                        onClick={handleSubmit}
+                        onClick={() => handleSubmit(false)}
                         disabled={isButtonDisabled}
                         className="h-9 md:h-10 px-4 md:px-5 rounded-lg text-sm md:text-base font-medium bg-foreground text-background hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                       >
-                        {isCreating ? (
+                        {isCreating && !submitRunAfterSave ? (
                           <>
-                            <svg
-                              className="w-4 h-4 animate-spin"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                            >
-                              <circle
-                                className="opacity-25"
-                                cx="12"
-                                cy="12"
-                                r="10"
-                                stroke="currentColor"
-                                strokeWidth="4"
-                              ></circle>
-                              <path
-                                className="opacity-75"
-                                fill="currentColor"
-                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                              ></path>
-                            </svg>
+                            {spinner}
                             {isEditing ? "Saving..." : "Creating..."}
                           </>
                         ) : isEditing ? (

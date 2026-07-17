@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { signOut } from "next-auth/react";
 import { useAccessToken, useMaxRowsPerEval, useDialogUrlParam } from "@/hooks";
 import { getDefaultHeaders, unwrapList } from "@/lib/api";
+import { buildTestToRun } from "@/lib/testRun";
 
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { TestRunnerDialog } from "@/components/TestRunnerDialog";
@@ -889,9 +890,13 @@ export function TestsTabContent({
   const createTestForAgent = async (
     config: TestConfig,
     evaluators: EvaluatorRefPayload[],
+    options?: { runAfterSave?: boolean },
   ) => {
     setValidationAttempted(true);
     if (!newTestName.trim()) return;
+    // Kept for the run-after-save display name; the run itself keys off the
+    // uuid the create call returns.
+    const targetName = newTestName.trim();
 
     try {
       setIsCreating(true);
@@ -956,7 +961,9 @@ export function TestsTabContent({
       // but won't show up in this agent's list — refresh anyway (it's still
       // a no-op for the agent table) but surface the warning and keep the
       // dialog open so the user knows they need to retry the attach.
+      // POST /tests/bulk returns { uuids, count, message, warnings }.
       const result = (await response.json().catch(() => null)) as {
+        uuids?: string[] | null;
         warnings?: string[] | null;
       } | null;
       await fetchAgentTests();
@@ -965,6 +972,24 @@ export function TestsTabContent({
           `Test created but could not be attached to this agent: ${result.warnings.join("; ")}`,
         );
         setIsCreating(false);
+        return;
+      }
+      // "Create and run": skip the agent-defaults prompt and run the new test
+      // straight away, using the uuid the create call returned (linking to
+      // this agent already succeeded — warnings are handled above).
+      const newUuid = result?.uuids?.[0];
+      if (options?.runAfterSave && newUuid) {
+        setNewTestName("");
+        setValidationAttempted(false);
+        closeTestDialogAfterSave();
+        runSavedTest(
+          buildTestToRun({
+            uuid: newUuid,
+            name: targetName,
+            type: config.evaluation.type,
+            config,
+          }),
+        );
         return;
       }
       const prompted = usesEvaluators
@@ -1002,6 +1027,17 @@ export function TestsTabContent({
   const closeTestDialogAfterSave = () => {
     setCreateDialogOpen(false);
     resetTestDialog();
+  };
+
+  // Open the test runner for a single just-saved test. Backing the dialog's
+  // "Save and run" shortcut, it mirrors the row-level play action (run one
+  // specific test, not the whole linked set). Skipped for an unverified
+  // connection, matching where the shortcut is offered.
+  const runSavedTest = (test: TestData) => {
+    if (isConnectionUnverified) return;
+    setTestsToRun([test]);
+    setRunAllLinked(false);
+    setTestRunnerOpen(true);
   };
 
   // Test is already saved when this prompt is shown. Declining (Not now / X)
@@ -1182,9 +1218,13 @@ export function TestsTabContent({
   const updateTest = async (
     config: TestConfig,
     evaluators: EvaluatorRefPayload[],
+    options?: { runAfterSave?: boolean },
   ) => {
     setValidationAttempted(true);
     if (!newTestName.trim() || !editingTestUuid) return;
+    // Capture before closeTestDialogAfterSave resets the edit state below.
+    const targetUuid = editingTestUuid;
+    const targetName = newTestName.trim();
 
     try {
       setIsCreating(true);
@@ -1242,6 +1282,21 @@ export function TestsTabContent({
       }
 
       await fetchAgentTests();
+      // "Save and run" takes priority: skip the agent-defaults prompt and go
+      // straight to running the just-saved test. We already hold its uuid
+      // (the open test's id), so run it directly — no list lookup needed.
+      if (options?.runAfterSave) {
+        closeTestDialogAfterSave();
+        runSavedTest(
+          buildTestToRun({
+            uuid: targetUuid,
+            name: targetName,
+            type: config.evaluation.type,
+            config,
+          }),
+        );
+        return;
+      }
       const prompted =
         config.evaluation.type === "response" ||
         config.evaluation.type === "conversation"
@@ -2588,6 +2643,21 @@ export function TestsTabContent({
           initialEvaluators={initialEvaluators}
           agentEvaluatorUuids={agentEvaluators.map((e) => e.uuid)}
           agentEvaluatorsPending={!agentEvaluatorsLoaded}
+          showRunAfterSave={!isConnectionUnverified}
+          onRun={() => {
+            // Run the already-saved version of the test being edited (the
+            // "run directly" / "discard and run" path). Build the run target
+            // from the open test's uuid — no list lookup — then close and run.
+            if (!editingTestUuid) return;
+            const runTest = buildTestToRun({
+              uuid: editingTestUuid,
+              name: newTestName.trim(),
+              type: initialConfig?.evaluation.type ?? "response",
+              config: initialConfig ?? {},
+            });
+            closeTestDialogAfterSave();
+            runSavedTest(runTest);
+          }}
         />
       )}
 

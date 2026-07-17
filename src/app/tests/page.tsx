@@ -7,6 +7,7 @@ import { signOut } from "next-auth/react";
 import { useAccessToken, useDialogUrlParam } from "@/hooks";
 import { getDefaultHeaders, unwrapList } from "@/lib/api";
 import { bulkDeleteTests } from "@/lib/testsApi";
+import { buildTestToRun } from "@/lib/testRun";
 import { AppLayout } from "@/components/AppLayout";
 import {
   ToolPicker,
@@ -619,10 +620,14 @@ function LLMPageInner() {
   // a consistent backend contract — see also BulkUploadTestsModal).
   const createTest = async (
     config: TestConfig,
-    evaluators: EvaluatorRefPayload[]
+    evaluators: EvaluatorRefPayload[],
+    options?: { runAfterSave?: boolean }
   ) => {
     setValidationAttempted(true);
     if (!newTestName.trim()) return;
+    // Kept for the run-after-save display name; the run itself keys off the
+    // uuid the create call returns.
+    const targetName = newTestName.trim();
 
     try {
       setIsCreating(true);
@@ -683,6 +688,11 @@ function LLMPageInner() {
         throw new Error("Failed to create test");
       }
 
+      // POST /tests/bulk returns { uuids, count, message, warnings }.
+      const result = (await response.json().catch(() => null)) as {
+        uuids?: string[] | null;
+      } | null;
+
       // Refetch the tests list to get the updated data
       const testsResponse = await fetch(`${backendUrl}/tests`, {
         method: "GET",
@@ -699,6 +709,20 @@ function LLMPageInner() {
 
       // Close the sidebar
       setAddTestSidebarOpen(false);
+
+      // "Create and run": open the agent-picker run dialog for the new test,
+      // using the uuid the create call returned.
+      const newUuid = result?.uuids?.[0];
+      if (options?.runAfterSave && newUuid) {
+        openRunTestDialog(
+          buildTestToRun({
+            uuid: newUuid,
+            name: targetName,
+            type: config.evaluation.type,
+            config,
+          })
+        );
+      }
     } catch (err) {
       reportError("Error creating test:", err);
       setCreateError(
@@ -855,10 +879,14 @@ function LLMPageInner() {
   // Update existing test via PUT API
   const updateTest = async (
     config: TestConfig,
-    evaluators: EvaluatorRefPayload[]
+    evaluators: EvaluatorRefPayload[],
+    options?: { runAfterSave?: boolean }
   ) => {
     setValidationAttempted(true);
     if (!newTestName.trim() || !editingTestUuid) return;
+    // Capture before resetForm() clears the edit state below.
+    const targetUuid = editingTestUuid;
+    const targetName = newTestName.trim();
 
     try {
       setIsCreating(true);
@@ -928,6 +956,20 @@ function LLMPageInner() {
       // Reset and close
       resetForm();
       setAddTestSidebarOpen(false);
+
+      // "Save and run": open the agent-picker run dialog for the just-saved
+      // test (running from this page always picks an agent first). We already
+      // hold its uuid (the open test's id), so run it directly.
+      if (options?.runAfterSave) {
+        openRunTestDialog(
+          buildTestToRun({
+            uuid: targetUuid,
+            name: targetName,
+            type: config.evaluation.type,
+            config,
+          })
+        );
+      }
     } catch (err) {
       reportError("Error updating test:", err);
       setCreateError(
@@ -1719,6 +1761,23 @@ function LLMPageInner() {
           initialTab={initialTab}
           initialConfig={initialConfig}
           initialEvaluators={initialEvaluators}
+          showRunAfterSave
+          onRun={() => {
+            // Run the already-saved version of the test being edited (the
+            // "run directly" / "discard and run" path). Build the run target
+            // from the open test's uuid — no list lookup — then close and open
+            // the agent picker for it.
+            if (!editingTestUuid) return;
+            const runTest = buildTestToRun({
+              uuid: editingTestUuid,
+              name: newTestName.trim(),
+              type: initialConfig?.evaluation.type ?? "response",
+              config: initialConfig ?? {},
+            });
+            resetForm();
+            setAddTestSidebarOpen(false);
+            openRunTestDialog(runTest);
+          }}
         />
       )}
 

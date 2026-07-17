@@ -764,5 +764,260 @@ describe("AddTestDialog", () => {
       await user.type(descriptionBox, "Some notes");
       expect(descriptionBox).toHaveValue("Some notes");
     });
+
+    it("never offers the run shortcut even when showRunAfterSave is set", () => {
+      render(
+        <AddTestDialog
+          {...baseProps({
+            mode: "labelItem",
+            itemDescription: "",
+            setItemDescription: jest.fn(),
+            showRunAfterSave: true,
+          })}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /Run test/ }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("save-and-run shortcut", () => {
+    it("does not render the run button unless showRunAfterSave is set", async () => {
+      render(<AddTestDialog {...baseProps({ initialTab: "next-reply" })} />);
+      await waitFor(() => expect(screen.getByText("Correctness")).toBeInTheDocument());
+      expect(
+        screen.queryByRole("button", { name: /Run test/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders 'Run test' when editing with showRunAfterSave", async () => {
+      const initialConfig: TestConfig = {
+        history: [
+          { role: "user", content: "Hi" },
+          { role: "assistant", content: "Hello" },
+          { role: "user", content: "How are you?" },
+        ],
+        evaluation: { type: "response" },
+      };
+      render(
+        <AddTestDialog
+          {...baseProps({
+            isEditing: true,
+            initialTab: "next-reply",
+            initialConfig,
+            testName: "Existing",
+            showRunAfterSave: true,
+          })}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: /Run test/ }),
+        ).toBeInTheDocument(),
+      );
+    });
+
+    it("submits with runAfterSave:true when the run button is clicked, and false for the plain create", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      render(
+        <ControlledDialog
+          {...baseProps({
+            initialTab: "next-reply",
+            onSubmit,
+            showRunAfterSave: true,
+          })}
+        />,
+      );
+      await waitFor(() => expect(screen.getByText("Correctness")).toBeInTheDocument());
+
+      await user.type(screen.getByPlaceholderText("Your test name"), "My test");
+      const textareas = document.querySelectorAll("textarea[data-msg-id]");
+      await user.type(textareas[0], "Hi there");
+      await user.type(textareas[1], "Hello!");
+      await user.type(textareas[2], "How are you?");
+      await user.type(
+        screen.getByPlaceholderText("Enter value for {{criteria}}"),
+        "Reply is polite",
+      );
+
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0][2]).toEqual({ runAfterSave: true });
+
+      await user.click(screen.getByRole("button", { name: "Create" }));
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+      expect(onSubmit.mock.calls[1][2]).toEqual({ runAfterSave: false });
+    });
+
+    it("shows the spinner on the run button while creating after a run-click", async () => {
+      const user = setupUser();
+      // A controlled wrapper that flips isCreating on once the run button is
+      // clicked, so we can assert the spinner lands on the run button (not the
+      // plain Create button).
+      function CreatingWrapper() {
+        const React = require("react");
+        const [creating, setCreating] = React.useState(false);
+        return (
+          <ControlledDialog
+            {...baseProps({
+              initialTab: "next-reply",
+              showRunAfterSave: true,
+              isCreating: creating,
+              onSubmit: () => setCreating(true),
+            })}
+          />
+        );
+      }
+      render(<CreatingWrapper />);
+      await waitFor(() => expect(screen.getByText("Correctness")).toBeInTheDocument());
+
+      await user.type(screen.getByPlaceholderText("Your test name"), "My test");
+      const textareas = document.querySelectorAll("textarea[data-msg-id]");
+      await user.type(textareas[0], "Hi there");
+      await user.type(textareas[1], "Hello!");
+      await user.type(textareas[2], "How are you?");
+      await user.type(
+        screen.getByPlaceholderText("Enter value for {{criteria}}"),
+        "Reply is polite",
+      );
+
+      const runButton = screen.getByRole("button", { name: /Run test/ });
+      await user.click(runButton);
+      // The run button keeps its label and gains a spinner; the plain button
+      // shows "Creating..." only when it was the trigger — here it should not.
+      expect(within(runButton).queryByRole("img")).not.toBeInTheDocument();
+      expect(runButton.querySelector(".animate-spin")).toBeInTheDocument();
+      expect(screen.queryByText("Creating...")).not.toBeInTheDocument();
+    });
+
+    const editConfig: TestConfig = {
+      history: [
+        { role: "user", content: "Hi" },
+        { role: "assistant", content: "Hello" },
+        { role: "user", content: "How are you?" },
+      ],
+      evaluation: { type: "response" },
+    };
+    // Passing initialEvaluators hydrates an attached evaluator on edit (the
+    // default correctness auto-attach only runs for brand-new tests). The
+    // criteria is pre-filled so the form loads clean and valid.
+    const editEvaluators = [
+      {
+        evaluator_uuid: "eval-correctness",
+        name: "Correctness",
+        slug: "default-llm-next-reply",
+        variables: [{ name: "criteria" }],
+        variable_values: { criteria: "Reply is polite" },
+      },
+    ];
+
+    function renderEdit(
+      overrides: Partial<Parameters<typeof AddTestDialog>[0]> = {},
+    ) {
+      return render(
+        <ControlledDialog
+          {...baseProps({
+            isEditing: true,
+            initialTab: "next-reply",
+            initialConfig: editConfig,
+            initialEvaluators: editEvaluators,
+            testName: "Existing",
+            showRunAfterSave: true,
+            ...overrides,
+          })}
+        />,
+      );
+    }
+
+    it("runs the saved test directly (no save, no prompt) when editing with no unsaved changes", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      const onRun = jest.fn();
+      renderEdit({ onSubmit, onRun });
+      await waitFor(() =>
+        expect(screen.getByDisplayValue("Reply is polite")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+      expect(onRun).toHaveBeenCalledTimes(1);
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    });
+
+    it("prompts on Run when editing with unsaved changes; Cancel dismisses without running", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      const onRun = jest.fn();
+      renderEdit({ onSubmit, onRun });
+      const criteria = await screen.findByDisplayValue("Reply is polite");
+
+      await user.type(criteria, "!"); // edit makes the form dirty
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+
+      expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onRun).not.toHaveBeenCalled();
+    });
+
+    it("'Save and run' from the prompt saves with runAfterSave and does not call onRun", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      const onRun = jest.fn();
+      renderEdit({ onSubmit, onRun });
+      const criteria = await screen.findByDisplayValue("Reply is polite");
+
+      await user.type(criteria, "!");
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+      await user.click(screen.getByRole("button", { name: "Save and run" }));
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0][2]).toEqual({ runAfterSave: true });
+      expect(onRun).not.toHaveBeenCalled();
+    });
+
+    it("'Discard and run' from the prompt runs the saved test without saving", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      const onRun = jest.fn();
+      renderEdit({ onSubmit, onRun });
+      const criteria = await screen.findByDisplayValue("Reply is polite");
+
+      await user.type(criteria, "!");
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+      await user.click(screen.getByRole("button", { name: "Discard and run" }));
+
+      expect(onRun).toHaveBeenCalledTimes(1);
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("falls back to save-and-run on a clean edit when no onRun is provided", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      renderEdit({ onSubmit }); // no onRun
+      await waitFor(() =>
+        expect(screen.getByDisplayValue("Reply is polite")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0][2]).toEqual({ runAfterSave: true });
+    });
+
+    it("falls back to save-and-run on 'Discard and run' when no onRun is provided", async () => {
+      const user = setupUser();
+      const onSubmit = jest.fn();
+      renderEdit({ onSubmit }); // no onRun
+      const criteria = await screen.findByDisplayValue("Reply is polite");
+
+      await user.type(criteria, "!");
+      await user.click(screen.getByRole("button", { name: /Run test/ }));
+      await user.click(screen.getByRole("button", { name: "Discard and run" }));
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0][2]).toEqual({ runAfterSave: true });
+    });
   });
 });
