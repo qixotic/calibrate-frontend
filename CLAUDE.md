@@ -143,18 +143,23 @@ Use `useSidebarState()` from `src/lib/sidebar.ts` for the open/closed state — 
 Whenever making a change, adding a new feature, or modifying anything, always do the following before writing code:
 
 1. **Review the existing code thoroughly** — search the codebase for existing code, functionality, components, hooks, and utilities that already do (or partly do) what's being asked. Don't build on assumptions about what exists; go look.
-2. **Make a parallel execution plan** — split the work into subtasks, mark which are independent, and plan to run the independent ones as multiple weak agents in parallel (each owning a disjoint set of files/sections). See `## Parallel execution` below and the `parallelize` skill.
+2. **Make a parallel execution plan** — split the work into subtasks, mark which are independent, and plan to run the independent ones as multiple weak agents in parallel (each owning a disjoint set of files/sections). When it is time to implement, always invoke the `parallelize` skill to run that plan. See `## Parallel execution` below.
 3. **Identify reuse** — call out which parts of the existing code can be reused directly or repackaged/extracted into reusable functions or components to support what needs to be built, rather than duplicating logic.
 4. **Prefer reliable libraries** — if the needed functionality is well-covered by a well-known, reliable library, bias toward using it instead of re-implementing it here, unless the requirements genuinely demand a custom solution.
 5. **Share the plan and surface choices** — present the plan and explicitly raise any decisions to be made, along with their tradeoffs, and ask the user instead of making assumptions.
 6. **Abstract the fix, apply it everywhere** — when fixing or changing something (especially from user feedback), derive the general rule and apply it to *every* place it's relevant, not only the instance the user quoted. Then audit the whole set (grep, a small script, a checklist) to confirm consistency — don't eyeball a single case. Naive, one-spot patches are treated as incomplete work.
 
 ## Parallel execution (default)
-For any multi-step or multi-file task, first write a short plan that splits the work
-into subtasks and marks which are independent. Run independent subtasks as parallel
-agents, each owning a disjoint set of files/sections so they never edit the same file
-at once. Keep dependent subtasks sequential. Show the plan before launching. See the
-`parallelize` skill for the full playbook.
+**Always invoke the `parallelize` skill before you start implementing.** The moment the
+plan is agreed and it is time to write code, run the skill and let it drive the work.
+This is not optional and does not need the user to ask for it.
+
+The skill splits the work into subtasks, marks which are independent, and runs the
+independent ones as parallel agents, each owning a disjoint set of files/sections so
+they never edit the same file at once. Dependent subtasks stay sequential. Show the
+plan before launching.
+
+Only skip it for a change so small it is a single edit to a single file.
 
 ## Workflow
 
