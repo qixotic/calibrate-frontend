@@ -35,6 +35,7 @@ const ROOT_SIDEBAR_ROUTES = new Set([
   "personas",
   "scenarios",
   "simulations",
+  "traces",
 ]);
 
 function workspaceInitial(name: string): string {
