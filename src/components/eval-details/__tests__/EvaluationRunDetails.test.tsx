@@ -8,7 +8,10 @@ import {
   hasSTTEmptyPredictions,
   getFirstSTTEmptyPredictionIndex,
   hasSemanticWerMetric,
+  hasSarvamMetrics,
   hasTtfsMetric,
+  visibleEvaluatorColumns,
+  evaluatorColumnHasData,
   STTEvaluationAbout,
   TTSEvaluationAbout,
   STTEvaluationLeaderboard,
@@ -381,6 +384,126 @@ describe("hasSemanticWerMetric", () => {
     expect(hasSemanticWerMetric(undefined)).toBe(false);
     expect(hasSemanticWerMetric([])).toBe(false);
     expect(hasSemanticWerMetric([{ metrics: null }])).toBe(false);
+  });
+});
+
+describe("hasSarvamMetrics", () => {
+  it("returns true when any provider carries sarvam_llm_wer", () => {
+    expect(
+      hasSarvamMetrics([{ metrics: { wer: 0.1, sarvam_llm_wer: 0.02 } }]),
+    ).toBe(true);
+  });
+
+  it("returns true when any provider carries sarvam_llm_cer", () => {
+    expect(
+      hasSarvamMetrics([{ metrics: { sarvam_llm_cer: 0.01 } }]),
+    ).toBe(true);
+  });
+
+  it("treats a zero value as present", () => {
+    expect(hasSarvamMetrics([{ metrics: { sarvam_llm_wer: 0 } }])).toBe(true);
+  });
+
+  it("returns false when no provider carries Sarvam metrics", () => {
+    expect(
+      hasSarvamMetrics([{ metrics: { wer: 0.1, cer: 0.05, semantic_wer: 0.02 } }]),
+    ).toBe(false);
+  });
+
+  it("returns false for null/undefined/empty input", () => {
+    expect(hasSarvamMetrics(null)).toBe(false);
+    expect(hasSarvamMetrics(undefined)).toBe(false);
+    expect(hasSarvamMetrics([])).toBe(false);
+    expect(hasSarvamMetrics([{ metrics: null }])).toBe(false);
+  });
+});
+
+describe("visibleEvaluatorColumns", () => {
+  const col = {
+    key: "semantic_match",
+    scoreField: "semantic_match",
+    reasoningField: "semantic_match_reasoning",
+  };
+
+  it("keeps a column when the leaderboard carries an aggregate score", () => {
+    expect(
+      visibleEvaluatorColumns([col], {
+        leaderboardSummary: [{ semantic_match: 0.8 }],
+      }),
+    ).toEqual([col]);
+  });
+
+  it("keeps a column when provider evaluator_runs carry an aggregate mean", () => {
+    expect(
+      visibleEvaluatorColumns([col], {
+        providerResults: [
+          {
+            evaluator_runs: [
+              { metric_key: "semantic_match", aggregate: { mean: 0.75 } },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([col]);
+  });
+
+  it("keeps a column when any result row carries a score", () => {
+    expect(
+      visibleEvaluatorColumns([col], {
+        providerResults: [
+          {
+            results: [{ semantic_match: "true" }],
+          },
+        ],
+      }),
+    ).toEqual([col]);
+  });
+
+  it("keeps a column when a row errored (the evaluator ran)", () => {
+    expect(
+      visibleEvaluatorColumns(
+        [{ ...col, evaluatorUuid: "u1" }],
+        {
+          providerResults: [
+            {
+              results: [
+                {
+                  evaluator_outputs: {
+                    u1: { error: true, value: null },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("drops a column with no leaderboard, aggregate, or row-level data", () => {
+    expect(
+      visibleEvaluatorColumns([col], {
+        leaderboardSummary: [{ wer: 0.1 }],
+        providerResults: [{ results: [{ wer: "0.1" }] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("drops the legacy llm_judge fallback when no scores exist", () => {
+    expect(
+      visibleEvaluatorColumns(
+        [
+          {
+            key: "llm_judge",
+            scoreField: "llm_judge_score",
+            reasoningField: "llm_judge_reasoning",
+          },
+        ],
+        {
+          providerResults: [{ results: [{ wer: "0.1", pred: "hi" }] }],
+        },
+      ),
+    ).toEqual([]);
   });
 });
 

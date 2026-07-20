@@ -25,7 +25,9 @@ import {
   hasSTTEmptyPredictions,
   getFirstSTTEmptyPredictionIndex,
   hasSemanticWerMetric,
+  hasSarvamMetrics as runHasSarvamMetrics,
   hasTtfsMetric,
+  visibleEvaluatorColumns,
   type STTEvaluatorColumn,
 } from "@/components/eval-details";
 import type { LatencyMetric } from "@/components/eval-details/ttsEvalTypes";
@@ -602,16 +604,20 @@ export default function STTEvaluationDetailPage() {
     [aboutEvaluators, evaluationResult, defaultEvaluator, judgeLabel],
   );
 
-  // Whether this run computed Sarvam's LLM judges — drives the extra About-tab
-  // metric rows. Detected from the presence of the aggregate metric keys on
-  // any provider (absent on judges-off and pre-feature runs).
+  const visibleAboutEvaluators = useMemo(() => {
+    const visibleUuids = new Set(
+      visibleEvaluatorColumns(evaluatorColumns, {
+        leaderboardSummary: evaluationResult?.leaderboard_summary,
+        providerResults: evaluationResult?.provider_results,
+      })
+        .map((c) => c.evaluatorUuid)
+        .filter((uuid): uuid is string => !!uuid),
+    );
+    return aboutEvaluators.filter((e) => visibleUuids.has(e.uuid));
+  }, [aboutEvaluators, evaluatorColumns, evaluationResult]);
+
   const hasSarvamMetrics = useMemo(
-    () =>
-      (evaluationResult?.provider_results ?? []).some(
-        (pr) =>
-          pr.metrics?.sarvam_llm_wer != null ||
-          pr.metrics?.sarvam_llm_cer != null,
-      ),
+    () => runHasSarvamMetrics(evaluationResult?.provider_results),
     [evaluationResult],
   );
 
@@ -971,7 +977,7 @@ export default function STTEvaluationDetailPage() {
                       showSarvamMetrics={hasSarvamMetrics}
                       showSemanticWer={hasSemanticWer}
                       showTtfs={hasTtfs}
-                      evaluatorRows={aboutEvaluators.map((e) => ({
+                      evaluatorRows={visibleAboutEvaluators.map((e) => ({
                         key: e.uuid,
                         metric: (
                           <Link
