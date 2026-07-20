@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { AgentPicker, Agent } from "@/components/AgentPicker";
 import { useHideFloatingButton } from "@/components/AppLayout";
+import { SpinnerIcon } from "@/components/icons";
 
 type RunTestDialogProps = {
   isOpen: boolean;
@@ -13,7 +14,7 @@ type RunTestDialogProps = {
     agentUuid: string,
     agentName: string,
     attachToAgent: boolean
-  ) => void;
+  ) => void | Promise<void>;
 };
 
 export function RunTestDialog({
@@ -28,18 +29,28 @@ export function RunTestDialog({
 
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [attachToAgent, setAttachToAgent] = useState(true);
+  // Guards the run button while the parent is starting the run, so a second
+  // click cannot create a second real, billed run.
+  const [isStarting, setIsStarting] = useState(false);
 
   // Reset state when dialog closes
   useEffect(() => {
     if (!isOpen) {
       setSelectedAgent(null);
       setAttachToAgent(true);
+      setIsStarting(false);
     }
   }, [isOpen]);
 
-  const handleRunTest = () => {
-    if (selectedAgent) {
-      onRunTest(selectedAgent.uuid, selectedAgent.name, attachToAgent);
+  const handleRunTest = async () => {
+    if (!selectedAgent || isStarting) return;
+    setIsStarting(true);
+    // The parent's onRunTest handles its own errors and never rejects, so a
+    // finally is all that is needed to release the button when it settles.
+    try {
+      await onRunTest(selectedAgent.uuid, selectedAgent.name, attachToAgent);
+    } finally {
+      setIsStarting(false);
     }
   };
 
@@ -159,12 +170,16 @@ export function RunTestDialog({
           </button>
           <button
             onClick={handleRunTest}
-            disabled={!selectedAgent}
+            disabled={!selectedAgent || isStarting}
             className="h-9 md:h-10 px-4 md:px-5 rounded-lg text-xs md:text-base font-medium bg-transparent text-foreground border border-border hover:bg-muted transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+            {isStarting ? (
+              <SpinnerIcon className="w-4 h-4 animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
             Run test
           </button>
         </div>

@@ -3,6 +3,7 @@ import { render, screen, setupUser, waitFor, act } from "@/test-utils";
 import { signOut } from "next-auth/react";
 import { TestsTabContent } from "../TestsTabContent";
 import { showLimitToast } from "@/constants/limits";
+import { toast } from "sonner";
 import {
   readBulkNameConflictMessage,
   readNameConflictMessage,
@@ -38,6 +39,11 @@ jest.mock("../../../lib/reportError", () => ({
 jest.mock("../../../constants/limits", () => ({
   __esModule: true,
   showLimitToast: jest.fn(),
+}));
+
+jest.mock("sonner", () => ({
+  __esModule: true,
+  toast: { error: jest.fn(), success: jest.fn() },
 }));
 
 jest.mock("../../../lib/parseBackendError", () => ({
@@ -88,10 +94,9 @@ jest.mock("../../AddTestDialog", () => ({
         </button>
         <button
           onClick={() =>
-            props.onSubmit(
-              { history: [], evaluation: { type: "response" } },
-              [{ evaluator_uuid: "e1" }],
-            )
+            props.onSubmit({ history: [], evaluation: { type: "response" } }, [
+              { evaluator_uuid: "e1" },
+            ])
           }
         >
           SubmitResponse
@@ -136,16 +141,10 @@ jest.mock("../../TestRunnerDialog", () => ({
     testRunnerProps = props;
     return props.isOpen ? (
       <div data-testid="test-runner-dialog">
-        <div data-testid="runner-test-count">{props.tests.length}</div>
-        <button onClick={() => props.onRunCreated?.("task-1", 2)}>
-          TriggerRunCreated
-        </button>
-        <button
-          onClick={() =>
-            props.onStatusUpdate?.("run-pending", "completed", [], 1, 0)
-          }
-        >
-          TriggerStatusUpdate
+        {/* The dialog is a pure viewer now: it only knows the run id. */}
+        <div data-testid="runner-task-id">{props.taskId}</div>
+        <button onClick={() => props.onNewRun?.("task-rerun", ["t1", "t2"])}>
+          TriggerNewRun
         </button>
         <button onClick={props.onClose}>CloseRunner</button>
       </div>
@@ -249,6 +248,14 @@ function installFetch() {
     if (url.includes("/agent-tests/agent/") && url.endsWith("/runs")) {
       return jsonResponse(state.pastRuns, state.pastRunsInit);
     }
+    // POST /agent-tests/agent/{uuid}/run — starting a run. The component
+    // creates the run here first and only then opens the runner dialog.
+    if (url.includes("/agent-tests/agent/") && url.endsWith("/run")) {
+      return jsonResponse(
+        state.startRun ?? { task_id: "task-new" },
+        state.startRunInit,
+      );
+    }
     if (url.includes("/agent-tests/bulk-delete-tests")) {
       const body = JSON.parse(opts.body);
       return jsonResponse(
@@ -327,6 +334,15 @@ function installFetch() {
     }
     return jsonResponse({});
   }) as any;
+}
+
+// The single POST that starts a run, for body assertions.
+function runPostCall() {
+  return (global.fetch as jest.Mock).mock.calls.find(
+    ([url, init]) =>
+      init?.method === "POST" &&
+      String(url).endsWith("/agent-tests/agent/agent-1/run"),
+  );
 }
 
 function renderComponent(
@@ -595,24 +611,66 @@ describe("TestsTabContent — populated table", () => {
     );
   });
 
-  it("runs a single test via its row Run button", async () => {
+  it("runs a single test via its row Run button — POSTs just that test's uuid", async () => {
     const user = setupUser();
     renderComponent();
     await screen.findAllByText("Greeting test");
 
     await user.click(screen.getAllByTitle("Run test")[0]);
     await screen.findByTestId("test-runner-dialog");
-    expect(screen.getByTestId("runner-test-count")).toHaveTextContent("1");
+    expect(JSON.parse(runPostCall()[1].body)).toEqual({ test_uuids: ["t1"] });
+    // The dialog views the run the POST just created.
+    expect(screen.getByTestId("runner-task-id")).toHaveTextContent("task-new");
   });
 
-  it("runs all tests from the header button", async () => {
+  it("runs all tests from the header button — POSTs no test_uuids", async () => {
     const user = setupUser();
     renderComponent();
     await screen.findAllByText("Greeting test");
 
     await user.click(screen.getByText("Run all tests"));
     await screen.findByTestId("test-runner-dialog");
-    expect(screen.getByTestId("runner-test-count")).toHaveTextContent("2");
+    // Run-all-linked sends an empty body; the backend reads the link table.
+    expect(JSON.parse(runPostCall()[1].body)).toEqual({});
+    expect(screen.getByTestId("runner-task-id")).toHaveTextContent("task-new");
+  });
+
+  it("runs the selected tests from the bulk toolbar", async () => {
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(screen.getByTitle("Select all"));
+    await user.click(screen.getByText("Run"));
+    await screen.findByTestId("test-runner-dialog");
+    expect(JSON.parse(runPostCall()[1].body)).toEqual({
+      test_uuids: ["t1", "t2"],
+    });
+  });
+
+  it("does not open the runner and shows an error toast when starting the run fails", async () => {
+    state.startRunInit = { ok: false, status: 500 };
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(screen.getByText("Run all tests"));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(screen.queryByTestId("test-runner-dialog")).not.toBeInTheDocument();
+  });
+
+  it("signs out and does not open the runner on a 401 from the run POST", async () => {
+    state.startRunInit = { ok: false, status: 401 };
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(screen.getByText("Run all tests"));
+    await waitFor(() =>
+      expect(signOut).toHaveBeenCalledWith({ callbackUrl: "/login" }),
+    );
+    expect(screen.queryByTestId("test-runner-dialog")).not.toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("shows a limit toast when running more tests than allowed", async () => {
@@ -623,6 +681,204 @@ describe("TestsTabContent — populated table", () => {
 
     await user.click(screen.getByText("Run all tests"));
     expect(showLimitToast).toHaveBeenCalled();
+    expect(screen.queryByTestId("test-runner-dialog")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Double-click guard: creating a run is a real, billed call, so every run
+// control locks while one POST is in flight and only the clicked one spins.
+// ---------------------------------------------------------------------------
+
+describe("TestsTabContent — run controls while a run is starting", () => {
+  // Holds the run POST open so the in-flight state can be observed.
+  let releaseRunPost: (() => void) | null = null;
+
+  beforeEach(() => {
+    state.agentTests = [responseTest, toolCallTest];
+    releaseRunPost = null;
+    const routedFetch = global.fetch as jest.Mock;
+    global.fetch = jest.fn(async (url: string, opts: RequestInit = {}) => {
+      if (
+        opts.method === "POST" &&
+        String(url).endsWith("/agent-tests/agent/agent-1/run")
+      ) {
+        await new Promise<void>((resolve) => {
+          releaseRunPost = resolve;
+        });
+      }
+      return routedFetch(url, opts);
+    }) as unknown as typeof fetch;
+  });
+
+  // The row Run buttons render twice per test (desktop table + mobile card).
+  const runTestButtons = () => screen.getAllByTitle("Run test");
+  const runAllButton = () =>
+    screen.getByText("Run all tests").closest("button") as HTMLButtonElement;
+
+  async function release() {
+    await act(async () => {
+      releaseRunPost?.();
+      await Promise.resolve();
+    });
+  }
+
+  it("disables every run control and spins the clicked row button", async () => {
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    const clicked = runTestButtons()[0];
+    await user.click(clicked);
+
+    await waitFor(() => expect(clicked).toBeDisabled());
+    expect(clicked.querySelector(".animate-spin")).toBeInTheDocument();
+    // Every other run control locks too, so a second run cannot be started
+    // from a different button.
+    runTestButtons()
+      .slice(1)
+      .forEach((btn) => expect(btn).toBeDisabled());
+    expect(runAllButton()).toBeDisabled();
+    // Only the clicked control spins.
+    expect(
+      runTestButtons()[1].querySelector(".animate-spin"),
+    ).not.toBeInTheDocument();
+
+    await release();
+    await screen.findByTestId("test-runner-dialog");
+    await waitFor(() => expect(runAllButton()).not.toBeDisabled());
+    runTestButtons().forEach((btn) => expect(btn).not.toBeDisabled());
+  });
+
+  it("does not start a second run when a row button is clicked twice", async () => {
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    const clicked = runTestButtons()[0];
+    await user.click(clicked);
+    await waitFor(() => expect(clicked).toBeDisabled());
+    // Same button again, and a sibling control, while the first POST is open.
+    await user.click(clicked);
+    await user.click(runAllButton());
+
+    expect(
+      (global.fetch as jest.Mock).mock.calls.filter(
+        ([url, init]) =>
+          init?.method === "POST" &&
+          String(url).endsWith("/agent-tests/agent/agent-1/run"),
+      ),
+    ).toHaveLength(1);
+
+    await release();
+  });
+
+  it("spins the header Run all button and re-enables it after the run starts", async () => {
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(runAllButton());
+    await waitFor(() => expect(runAllButton()).toBeDisabled());
+    expect(runAllButton().querySelector(".animate-spin")).toBeInTheDocument();
+    runTestButtons().forEach((btn) => expect(btn).toBeDisabled());
+
+    await release();
+    await screen.findByTestId("test-runner-dialog");
+    await waitFor(() => expect(runAllButton()).not.toBeDisabled());
+    expect(
+      runAllButton().querySelector(".animate-spin"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disables the bulk Run button while another run is starting", async () => {
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    // Start a run from a row, then open the bulk toolbar: its Run button is
+    // locked too, so the in-flight POST cannot be doubled from there.
+    await user.click(runTestButtons()[0]);
+    await waitFor(() => expect(runTestButtons()[0]).toBeDisabled());
+    await user.click(screen.getByTitle("Select all"));
+
+    const bulkRun = screen.getByRole("button", { name: "Run" });
+    expect(bulkRun).toBeDisabled();
+    await user.click(bulkRun);
+    expect(
+      (global.fetch as jest.Mock).mock.calls.filter(
+        ([url, init]) =>
+          init?.method === "POST" &&
+          String(url).endsWith("/agent-tests/agent/agent-1/run"),
+      ),
+    ).toHaveLength(1);
+
+    await release();
+    await screen.findByTestId("test-runner-dialog");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Run" })).not.toBeDisabled(),
+    );
+  });
+
+  it("re-enables the run controls after a failed run POST", async () => {
+    state.startRunInit = { ok: false, status: 500 };
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(runAllButton());
+    await waitFor(() => expect(runAllButton()).toBeDisabled());
+
+    await release();
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    await waitFor(() => expect(runAllButton()).not.toBeDisabled());
+    runTestButtons().forEach((btn) => expect(btn).not.toBeDisabled());
+    expect(screen.queryByTestId("test-runner-dialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps the bulk toolbar up and spins its own button while the bulk run starts", async () => {
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(screen.getByTitle("Select all"));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    // The ticks are not cleared yet, so the bar is still shown and its own
+    // button is marked busy while the single POST is in flight.
+    const bulkRun = screen.getByRole("button", { name: "Run" });
+    expect(bulkRun).toBeInTheDocument();
+    expect(bulkRun).toHaveAttribute("aria-busy", "true");
+    expect(
+      (global.fetch as jest.Mock).mock.calls.filter(
+        ([url, init]) =>
+          init?.method === "POST" &&
+          String(url).endsWith("/agent-tests/agent/agent-1/run"),
+      ),
+    ).toHaveLength(1);
+
+    // Once the run has started, the ticks clear and the bar goes away.
+    await release();
+    await screen.findByTestId("test-runner-dialog");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Run" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the selection when the bulk run fails", async () => {
+    state.startRunInit = { ok: false, status: 500 };
+    const user = setupUser();
+    renderComponent();
+    await screen.findAllByText("Greeting test");
+
+    await user.click(screen.getByTitle("Select all"));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    await release();
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // The run did not start, so the ticks are kept and the bar stays for a
+    // retry rather than silently clearing.
+    expect(screen.getByRole("button", { name: "Run" })).toBeInTheDocument();
     expect(screen.queryByTestId("test-runner-dialog")).not.toBeInTheDocument();
   });
 });
@@ -905,15 +1161,17 @@ describe("TestsTabContent — create / bulk upload / attach", () => {
     await waitFor(() => {
       const postCall = (global.fetch as jest.Mock).mock.calls.find(
         (c: any[]) =>
-          c[1]?.method === "POST" &&
-          String(c[0]).endsWith("/agent-tests"),
+          c[1]?.method === "POST" && String(c[0]).endsWith("/agent-tests"),
       );
       expect(postCall).toBeTruthy();
     });
   });
 
   it("select-all in the dropdown selects every available test", async () => {
-    state.allTests = [libraryTest, { ...libraryTest, uuid: "t4", name: "Second lib" }];
+    state.allTests = [
+      libraryTest,
+      { ...libraryTest, uuid: "t4", name: "Second lib" },
+    ];
     const user = setupUser();
     renderComponent();
     await screen.findByText("No tests attached");
@@ -965,16 +1223,17 @@ describe("TestsTabContent — benchmark & past runs", () => {
     await screen.findByText("0 models");
   });
 
-  it("adds an optimistic run when a test run is created", async () => {
+  it("adds an optimistic run as soon as a test run is created", async () => {
     state.agentTests = [responseTest];
     const user = setupUser();
     renderComponent();
     await screen.findAllByText("Greeting test");
 
     await user.click(screen.getByText("Run all tests"));
-    await screen.findByTestId("test-runner-dialog");
-    await user.click(screen.getByText("TriggerRunCreated"));
+    // The pending row is added by the parent when the POST returns, before
+    // (and independently of) the dialog reporting anything back.
     await screen.findByText("Running");
+    await screen.findByTestId("test-runner-dialog");
   });
 
   it("renders past-run status pills (breakdown, error, complete)", async () => {
@@ -1043,6 +1302,7 @@ describe("TestsTabContent — benchmark & past runs", () => {
     // label is unambiguous.
     await user.click(screen.getByText("2 tests"));
     await screen.findByTestId("test-runner-dialog");
+    expect(screen.getByTestId("runner-task-id")).toHaveTextContent("run-unit");
   });
 
   it("opens the benchmark results dialog when a benchmark run row is clicked", async () => {
@@ -1068,7 +1328,10 @@ describe("TestsTabContent — benchmark & past runs", () => {
     await screen.findByTestId("benchmark-results-dialog");
   });
 
-  it("reruns a unit-test run: swaps the view dialog for a fresh new-run dialog with the same tests", async () => {
+  it("switches to the new run and prepends its row when the dialog reports a rerun (onNewRun)", async () => {
+    // The dialog now creates the rerun itself and hands the parent the new run
+    // id + the tests it ran; the parent shows the pending row and re-points the
+    // dialog at that run.
     state.agentTests = [responseTest];
     state.pastRuns = [
       {
@@ -1092,25 +1355,18 @@ describe("TestsTabContent — benchmark & past runs", () => {
 
     await user.click(screen.getByText("2 tests"));
     await screen.findByTestId("test-runner-dialog");
+    expect(screen.getByTestId("runner-task-id")).toHaveTextContent("run-unit");
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
 
-    // Fire the rerun with the exact tests the run executed (as the dialog would
-    // from the run's test_uuids).
     await act(async () => {
-      testRunnerProps.onRerun([
-        { ...responseTest, uuid: "real-1", name: "A" },
-        { ...responseTest, uuid: "real-2", name: "B" },
-      ]);
+      testRunnerProps.onNewRun("task-rerun", ["t1"]);
     });
 
-    // The fresh new-run dialog is open with both tests and not run-all-linked.
-    await screen.findByTestId("test-runner-dialog");
-    expect(screen.getByTestId("runner-test-count")).toHaveTextContent("2");
-    expect(testRunnerProps.taskId).toBeUndefined();
-    expect(testRunnerProps.runAllLinked).toBe(false);
-    expect(testRunnerProps.tests.map((t) => t.uuid)).toEqual([
-      "real-1",
-      "real-2",
-    ]);
+    // Same single dialog, now viewing the new run, plus a pending row for it.
+    expect(screen.getByTestId("runner-task-id")).toHaveTextContent(
+      "task-rerun",
+    );
+    await screen.findByText("Running");
   });
 
   it("reruns a benchmark: opens a direct benchmark dialog with the given models, no picker", async () => {
