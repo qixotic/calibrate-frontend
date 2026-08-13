@@ -13,6 +13,8 @@ export type { EvaluationCriteriaData } from "./EvaluationTabContent";
 
 export { TestsTabContent } from "./TestsTabContent";
 
+export { TracesTabContent } from "./TracesTabContent";
+
 export { EvaluatorsTabContent } from "./EvaluatorsTabContent";
 export { AddEvaluatorsDialog } from "./AddEvaluatorsDialog";
 
