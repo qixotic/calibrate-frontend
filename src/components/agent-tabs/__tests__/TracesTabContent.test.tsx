@@ -130,9 +130,10 @@ it("keeps the conversation filter on the agent's own tab URL", async () => {
 });
 
 it("pages through a list longer than one page", async () => {
-  const first = Array.from({ length: 50 }, (_, i) => summary(`t${i}`));
+  // Only `total` drives the paging controls, so keep the fixture small —
+  // rendering a full page of rows in jsdom is slow enough to time out.
   mockFetchTraces.mockResolvedValue({
-    items: first,
+    items: [summary("t1"), summary("t2")],
     total: 120,
     limit: 50,
     offset: 0,
@@ -140,7 +141,7 @@ it("pages through a list longer than one page", async () => {
   const user = setupUser();
 
   render(<TracesTabContent agentUuid={AGENT} />);
-  await screen.findByText(/Showing 1–50 of 120/);
+  await screen.findByText(/Showing 1–2 of 120/);
 
   expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
   await user.click(screen.getByRole("button", { name: "Next" }));
