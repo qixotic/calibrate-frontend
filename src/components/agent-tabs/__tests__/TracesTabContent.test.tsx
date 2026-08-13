@@ -128,3 +128,95 @@ it("keeps the conversation filter on the agent's own tab URL", async () => {
   expect(query.get("tab")).toBe("traces");
   expect(query.get("conversation_id")).toBe("conv-1");
 });
+
+it("pages through a list longer than one page", async () => {
+  const first = Array.from({ length: 50 }, (_, i) => summary(`t${i}`));
+  mockFetchTraces.mockResolvedValue({
+    items: first,
+    total: 120,
+    limit: 50,
+    offset: 0,
+  });
+  const user = setupUser();
+
+  render(<TracesTabContent agentUuid={AGENT} />);
+  await screen.findByText(/Showing 1–50 of 120/);
+
+  expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Next" }));
+
+  await waitFor(() =>
+    expect(mockFetchTraces.mock.calls.some((c) => c[1].offset === 50)).toBe(
+      true,
+    ),
+  );
+  // The agent stays scoped across pages.
+  expect(mockFetchTraces.mock.calls.at(-1)[1].agentUuid).toBe(AGENT);
+});
+
+it("opens the detail dialog and deep-links the trace", async () => {
+  mockFetchTraces.mockResolvedValue({
+    items: [summary("t1")],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+  const user = setupUser();
+
+  render(<TracesTabContent agentUuid={AGENT} />);
+  await user.click((await screen.findAllByText("msg-t1"))[0]);
+
+  // useDialogUrlParam writes through history, not the router, so the deep
+  // link shows up in the address bar rather than in a router call.
+  await waitFor(() => expect(window.location.search).toContain("traceId=t1"));
+});
+
+it("surfaces a load failure instead of an empty list", async () => {
+  mockFetchTraces.mockRejectedValue(new Error("boom"));
+
+  render(<TracesTabContent agentUuid={AGENT} />);
+
+  expect(
+    await screen.findByText(/Failed to load traces/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("No traces yet")).not.toBeInTheDocument();
+});
+
+it("keeps the dialog open when deleting everything matching fails", async () => {
+  searchParams = new URLSearchParams("conversation_id=conv-1");
+  mockFetchTraces.mockResolvedValue({
+    items: [summary("t1")],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+  mockBulkDelete.mockRejectedValue(new Error("nope"));
+  const user = setupUser();
+
+  render(<TracesTabContent agentUuid={AGENT} />);
+  await user.click(await screen.findByText(/Delete all 1 matching/));
+  await user.click(screen.getByRole("button", { name: "Delete all" }));
+
+  await waitFor(() => expect(mockBulkDelete).toHaveBeenCalled());
+  expect(
+    screen.getByRole("heading", { name: /Delete all 1 matching traces\?/ }),
+  ).toBeInTheDocument();
+});
+
+it("says no traces match when a filter empties the list", async () => {
+  searchParams = new URLSearchParams("conversation_id=conv-zzz");
+  mockFetchTraces.mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 50,
+    offset: 0,
+  });
+
+  render(<TracesTabContent agentUuid={AGENT} />);
+
+  expect(
+    await screen.findByText("No traces match your filters."),
+  ).toBeInTheDocument();
+  // Not the empty state — this agent may well have traces, just not these.
+  expect(screen.queryByText("No traces yet")).not.toBeInTheDocument();
+});
