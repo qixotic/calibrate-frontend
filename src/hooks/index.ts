@@ -17,6 +17,7 @@ export {
   TRACES_PAGE_SIZE,
 } from "./useTraces";
 export { useTraceDeletion } from "./useTraceDeletion";
+export { useTraceEvaluations } from "./useTraceEvaluations";
 export { useDialogUrlParam } from "./useDialogUrlParam";
 export { usePageErrorState } from "./usePageErrorState";
 export type { PageErrorCode } from "./usePageErrorState";

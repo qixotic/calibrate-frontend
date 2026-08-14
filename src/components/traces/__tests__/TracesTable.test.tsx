@@ -1,6 +1,23 @@
 import { render, screen, setupUser } from "@/test-utils";
-import { TracesTable, formatTraceDate } from "../TracesTable";
+import {
+  TracesTable,
+  evalSummaryState,
+  formatTraceDate,
+} from "../TracesTable";
 import type { TraceSummary } from "@/lib/tracesApi";
+import { fetchTraceEvaluations } from "@/lib/traceEvalApi";
+
+jest.mock("../../../lib/traceEvalApi", () => ({
+  __esModule: true,
+  fetchTraceEvaluations: jest.fn(),
+  formatVerdict: jest.requireActual("../../../lib/traceEvalApi").formatVerdict,
+}));
+jest.mock("../../../lib/reportError", () => ({
+  __esModule: true,
+  reportError: jest.fn(),
+}));
+
+const mockFetchEvaluations = fetchTraceEvaluations as jest.Mock;
 
 function trace(overrides: Partial<TraceSummary> = {}): TraceSummary {
   return {
@@ -14,10 +31,21 @@ function trace(overrides: Partial<TraceSummary> = {}): TraceSummary {
     tool_call_count: 1,
     tool_call_names: ["get_schedule"],
     metadata_count: 2,
+    eval_summary: null,
     created_at: "2026-07-20T10:00:00Z",
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  mockFetchEvaluations.mockReset();
+  mockFetchEvaluations.mockResolvedValue({ trace_uuid: "t1", results: [] });
+  localStorage.setItem("access_token", "tok");
+});
+
+afterEach(() => {
+  localStorage.clear();
+});
 
 function renderTable(props: Partial<React.ComponentProps<typeof TracesTable>> = {}) {
   const onOpen = jest.fn();
@@ -135,4 +163,86 @@ it("shows a plain zero when the turn called no tools", () => {
 
   expect(screen.getByText("0")).toBeInTheDocument();
   expect(screen.queryByText(/^\+\d/)).not.toBeInTheDocument();
+});
+
+describe("evalSummaryState", () => {
+  it("treats a missing summary as not evaluated", () => {
+    expect(evalSummaryState(null)).toBe("not-evaluated");
+    expect(evalSummaryState(undefined)).toBe("not-evaluated");
+  });
+
+  it("does not read no evaluators as nothing passing", () => {
+    expect(evalSummaryState({ passed: 0, total: 0 })).toBe("not-evaluated");
+  });
+
+  it("separates all, some, and none passing", () => {
+    expect(evalSummaryState({ passed: 3, total: 3 })).toBe("all-passed");
+    expect(evalSummaryState({ passed: 2, total: 3 })).toBe("some-passed");
+    expect(evalSummaryState({ passed: 0, total: 3 })).toBe("none-passed");
+  });
+});
+
+describe("the evaluations column", () => {
+  it("marks a trace nothing has scored yet, without showing a count", () => {
+    renderTable({ traces: [trace({ eval_summary: null })] });
+
+    // Desktop table and mobile card both render it.
+    expect(screen.getAllByText("Not evaluated yet").length).toBe(2);
+    expect(screen.queryByText(/passed/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a trace nothing passed distinct from one nothing scored", () => {
+    renderTable({ traces: [trace({ eval_summary: { passed: 0, total: 3 } })] });
+
+    expect(screen.getAllByText("0 of 3 passed").length).toBe(2);
+    expect(screen.queryByText("Not evaluated yet")).not.toBeInTheDocument();
+  });
+
+  it("counts how many evaluators passed a trace", () => {
+    renderTable({ traces: [trace({ eval_summary: { passed: 3, total: 3 } })] });
+
+    expect(screen.getAllByText("3 of 3 passed").length).toBe(2);
+  });
+
+  it("counts a partly passing trace", () => {
+    renderTable({ traces: [trace({ eval_summary: { passed: 2, total: 3 } })] });
+
+    expect(screen.getAllByText("2 of 3 passed").length).toBe(2);
+  });
+
+  it("does not offer to open results for a trace nothing has scored", () => {
+    renderTable({ traces: [trace({ eval_summary: null })] });
+
+    expect(
+      screen.queryByTitle("See what the evaluators found"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the evaluator results without opening the trace itself", async () => {
+    const user = setupUser();
+    const { onOpen } = renderTable({
+      traces: [trace({ eval_summary: { passed: 2, total: 3 } })],
+    });
+
+    await user.click(screen.getAllByTitle("See what the evaluators found")[0]);
+
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("What the evaluators found"),
+    ).toBeInTheDocument();
+    expect(mockFetchEvaluations).toHaveBeenCalledWith("tok", "t1");
+  });
+
+  it("closes the evaluator results again", async () => {
+    const user = setupUser();
+    renderTable({ traces: [trace({ eval_summary: { passed: 2, total: 3 } })] });
+
+    await user.click(screen.getAllByTitle("See what the evaluators found")[0]);
+    await screen.findByText("What the evaluators found");
+    await user.click(screen.getByLabelText("Close"));
+
+    expect(
+      screen.queryByText("What the evaluators found"),
+    ).not.toBeInTheDocument();
+  });
 });

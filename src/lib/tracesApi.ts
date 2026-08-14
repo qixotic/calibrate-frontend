@@ -26,6 +26,14 @@ export type TraceMetadataEntry = {
   value: string;
 };
 
+/** How many of the evaluators that scored a trace passed it. Absent (`null`)
+ *  on the summary means no evaluator has scored the trace yet, which is a
+ *  different thing from every evaluator failing it. */
+export type TraceEvalSummary = {
+  passed: number;
+  total: number;
+};
+
 /** Slim list row from `GET /traces` — previews and counts only; the full
  *  bodies live on the detail endpoint. */
 export type TraceSummary = {
@@ -41,6 +49,9 @@ export type TraceSummary = {
    *  is often shorter than `tool_call_count`. */
   tool_call_names: string[];
   metadata_count: number;
+  /** Absent until an evaluator has scored this trace. Optional so the list
+   *  still types against a backend deployed before this field existed. */
+  eval_summary?: TraceEvalSummary | null;
   created_at: string;
 };
 
