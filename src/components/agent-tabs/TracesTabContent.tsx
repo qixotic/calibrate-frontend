@@ -12,6 +12,7 @@ import {
   useDialogUrlParam,
   useMaxTraces,
   useTraceCount,
+  useWorkspaceTraceCount,
   useTraceDeletion,
   useTraces,
 } from "@/hooks";
@@ -78,7 +79,15 @@ export function TracesTabContent({ agentUuid }: TracesTabContentProps) {
 
   const [usageRefreshKey, setUsageRefreshKey] = useState(0);
   const traceCount = useTraceCount(accessToken, agentUuid, usageRefreshKey);
+  const workspaceTraceCount = useWorkspaceTraceCount(
+    accessToken,
+    usageRefreshKey,
+  );
   const maxTraces = useMaxTraces();
+  // The limit is workspace-wide, so this agent can be far under it and still
+  // be refused new traces because other agents filled the workspace.
+  const atCapacity =
+    workspaceTraceCount != null && workspaceTraceCount >= maxTraces;
 
   const deletion = useTraceDeletion({
     traces: items,
@@ -146,6 +155,33 @@ export function TracesTabContent({ agentUuid }: TracesTabContentProps) {
           </p>
         )}
       </div>
+
+      {atCapacity && (
+        <div
+          role="status"
+          className="rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-900 dark:border-yellow-500/30 dark:bg-yellow-500/10 dark:text-yellow-200 flex items-start gap-2"
+        >
+          <svg
+            className="w-4 h-4 mt-0.5 shrink-0"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 9v3.75m0 3.75h.01M10.34 3.94l-8.1 14.02A1.5 1.5 0 003.54 20.2h16.92a1.5 1.5 0 001.3-2.24l-8.1-14.02a1.5 1.5 0 00-2.6 0z"
+            />
+          </svg>
+          <span>
+            Your workspace is storing all {maxTraces.toLocaleString()} traces it
+            can hold, so new ones are not being saved. Delete traces you no
+            longer need, or contact support to ask for a higher limit.
+          </span>
+        </div>
+      )}
 
       {!showEmptyState && (
         <div className="flex flex-col md:flex-row md:items-center gap-3">

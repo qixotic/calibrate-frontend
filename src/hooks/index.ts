@@ -10,7 +10,12 @@ export { useVerifyConnection } from "./useVerifyConnection";
 export type { VerifyConnectionResult } from "./useVerifyConnection";
 export { useMaxRowsPerEval } from "./useMaxRowsPerEval";
 export { useMaxTraces } from "./useMaxTraces";
-export { useTraces, useTraceCount, TRACES_PAGE_SIZE } from "./useTraces";
+export {
+  useTraces,
+  useTraceCount,
+  useWorkspaceTraceCount,
+  TRACES_PAGE_SIZE,
+} from "./useTraces";
 export { useTraceDeletion } from "./useTraceDeletion";
 export { useDialogUrlParam } from "./useDialogUrlParam";
 export { usePageErrorState } from "./usePageErrorState";

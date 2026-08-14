@@ -221,3 +221,52 @@ it("says no traces match when a filter empties the list", async () => {
   // Not the empty state — this agent may well have traces, just not these.
   expect(screen.queryByText("No traces yet")).not.toBeInTheDocument();
 });
+
+describe("storage limit banner", () => {
+  // The workspace-wide read is the one with no agentUuid; the agent's own list
+  // and count both carry it.
+  function mockCounts({
+    workspaceTotal,
+    agentTotal,
+  }: {
+    workspaceTotal: number;
+    agentTotal: number;
+  }) {
+    mockFetchTraces.mockImplementation((_token, params) =>
+      Promise.resolve({
+        items: params.agentUuid && params.limit > 1 ? [summary("t1")] : [],
+        total: params.agentUuid === undefined ? workspaceTotal : agentTotal,
+        limit: params.limit,
+        offset: params.offset,
+      }),
+    );
+  }
+
+  it("warns and points at support once the workspace is full", async () => {
+    mockCounts({ workspaceTotal: 50000, agentTotal: 12 });
+
+    render(<TracesTabContent agentUuid={AGENT} />);
+
+    const banner = await screen.findByRole("status");
+    expect(banner).toHaveTextContent("new ones are not being saved");
+    expect(banner).toHaveTextContent("contact support");
+  });
+
+  it("stays hidden while the workspace is under the limit", async () => {
+    mockCounts({ workspaceTotal: 49999, agentTotal: 12 });
+
+    render(<TracesTabContent agentUuid={AGENT} />);
+
+    await waitFor(() => expect(mockFetchTraces).toHaveBeenCalled());
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("warns even when this agent holds almost none of the traces", async () => {
+    // The limit is workspace-wide, so an agent's own count cannot decide it.
+    mockCounts({ workspaceTotal: 50000, agentTotal: 1 });
+
+    render(<TracesTabContent agentUuid={AGENT} />);
+
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+  });
+});

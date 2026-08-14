@@ -130,9 +130,21 @@ export function useTraces({
  * well under the cap while the workspace is at it. Bump `refreshKey` after
  * deletes or ingests to re-read.
  */
+/**
+ * Live trace count across the whole workspace, which is what the storage limit
+ * applies to. The per-agent count cannot stand in for it: an agent well under
+ * the limit still stops accepting traces once its siblings fill the workspace.
+ */
+export function useWorkspaceTraceCount(
+  accessToken: string | null,
+  refreshKey = 0,
+) {
+  return useTraceCount(accessToken, undefined, refreshKey);
+}
+
 export function useTraceCount(
   accessToken: string | null,
-  agentUuid: string,
+  agentUuid: string | undefined,
   refreshKey = 0,
 ) {
   const [count, setCount] = useState<number | null>(null);
