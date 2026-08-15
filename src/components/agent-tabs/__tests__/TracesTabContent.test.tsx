@@ -13,6 +13,13 @@ jest.mock("../../../lib/api", () => ({
   getBackendUrl: jest.fn(() => "https://api.example.com"),
   apiGet: jest.fn().mockResolvedValue({ max_traces: 50000 }),
 }));
+jest.mock("../../../lib/traceEvalApi", () => ({
+  __esModule: true,
+  fetchTraceEvaluations: jest
+    .fn()
+    .mockResolvedValue({ trace_uuid: "t1", results: [] }),
+  formatVerdict: jest.requireActual("../../../lib/traceEvalApi").formatVerdict,
+}));
 jest.mock("../../../hooks/useAccessToken", () => ({
   __esModule: true,
   useAccessToken: () => "tok",
@@ -268,5 +275,31 @@ describe("storage limit banner", () => {
     render(<TracesTabContent agentUuid={AGENT} />);
 
     expect(await screen.findByRole("status")).toBeInTheDocument();
+  });
+});
+
+describe("evaluator results dialog", () => {
+  it("opens from a row's badge and closes again", async () => {
+    const user = setupUser();
+    mockFetchTraces.mockResolvedValue({
+      items: [summary("t1", { eval_summary: { passed: 2, total: 3 } })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    render(<TracesTabContent agentUuid={AGENT} />);
+
+    await user.click(
+      (await screen.findAllByTitle("See what the evaluators found"))[0],
+    );
+    expect(
+      await screen.findByText("What the evaluators found"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Close"));
+    expect(
+      screen.queryByText("What the evaluators found"),
+    ).not.toBeInTheDocument();
   });
 });

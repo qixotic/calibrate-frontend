@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { TracesTable } from "@/components/traces/TracesTable";
 import { TraceDetailDialog } from "@/components/traces/TraceDetailDialog";
+import { TraceEvaluationsDialog } from "@/components/traces/TraceEvaluationsDialog";
 import { TracesEmptyState } from "@/components/traces/TracesEmptyState";
 import { LoadingState, SearchInput } from "@/components/ui";
 import {
@@ -16,7 +17,7 @@ import {
   useTraceDeletion,
   useTraces,
 } from "@/hooks";
-import { bulkDeleteMatchingTraces } from "@/lib/tracesApi";
+import { bulkDeleteMatchingTraces, type TraceSummary } from "@/lib/tracesApi";
 import { reportError } from "@/lib/reportError";
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -138,6 +139,10 @@ export function TracesTabContent({ agentUuid }: TracesTabContentProps) {
     setTraceParam(null);
   };
 
+  const [evaluationsFor, setEvaluationsFor] = useState<TraceSummary | null>(
+    null,
+  );
+
   const showEmptyState = !isLoading && !error && total === 0 && !filtersActive;
   const rangeStart = total === 0 ? 0 : offset + 1;
   const rangeEnd = Math.min(offset + items.length, total);
@@ -248,6 +253,7 @@ export function TracesTabContent({ agentUuid }: TracesTabContentProps) {
             hasSelectableItems={deletion.hasSelectableItems}
             onToggleSelectAll={deletion.toggleSelectAll}
             onOpen={openTrace}
+            onOpenEvaluations={setEvaluationsFor}
             onDelete={deletion.openDeleteDialog}
             onFilterConversation={(value) => setConversationFilter(value)}
           />
@@ -285,6 +291,14 @@ export function TracesTabContent({ agentUuid }: TracesTabContentProps) {
         onClose={closeTrace}
         accessToken={accessToken}
         traceUuid={openTraceUuid}
+      />
+
+      <TraceEvaluationsDialog
+        isOpen={evaluationsFor != null}
+        onClose={() => setEvaluationsFor(null)}
+        accessToken={accessToken}
+        traceUuid={evaluationsFor?.uuid ?? null}
+        messageId={evaluationsFor?.message_id}
       />
 
       <DeleteConfirmationDialog

@@ -1,11 +1,9 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import { SelectCheckbox } from "@/components/ui/SelectCheckbox";
 import { DeleteIconButton } from "@/components/ui";
-import { useAccessToken } from "@/hooks/useAccessToken";
 import type { TraceEvalSummary, TraceSummary } from "@/lib/tracesApi";
-import { TraceEvaluationsDialog } from "./TraceEvaluationsDialog";
 
 type CheckboxProps = {
   checked: boolean;
@@ -24,6 +22,8 @@ type TracesTableProps = {
   onToggleSelectAll: () => void;
   /** Open the detail view for a trace. */
   onOpen: (traceUuid: string) => void;
+  /** Open the evaluator results for a trace. */
+  onOpenEvaluations: (trace: TraceSummary) => void;
   /** Ask to delete a single trace. */
   onDelete: (trace: TraceSummary) => void;
   /** Filter the list down to one conversation. */
@@ -226,14 +226,10 @@ export function TracesTable({
   hasSelectableItems,
   onToggleSelectAll,
   onOpen,
+  onOpenEvaluations,
   onDelete,
   onFilterConversation,
 }: TracesTableProps) {
-  const accessToken = useAccessToken();
-  const [evaluationsFor, setEvaluationsFor] = useState<TraceSummary | null>(
-    null,
-  );
-
   return (
     <>
       {/* Desktop table */}
@@ -322,7 +318,7 @@ export function TracesTable({
                 <td className="px-4 py-3">
                   <EvaluationsBadge
                     summary={trace.eval_summary}
-                    onOpen={() => setEvaluationsFor(trace)}
+                    onOpen={() => onOpenEvaluations(trace)}
                   />
                 </td>
                 <td className="px-4 py-3 text-[13px] text-muted-foreground whitespace-nowrap">
@@ -383,7 +379,7 @@ export function TracesTable({
             <div className="px-4 pb-2">
               <EvaluationsBadge
                 summary={trace.eval_summary}
-                onOpen={() => setEvaluationsFor(trace)}
+                onOpen={() => onOpenEvaluations(trace)}
               />
             </div>
             <div className="flex items-center gap-2 px-4 pb-3 pt-0">
@@ -408,13 +404,6 @@ export function TracesTable({
         ))}
       </div>
 
-      <TraceEvaluationsDialog
-        isOpen={evaluationsFor != null}
-        onClose={() => setEvaluationsFor(null)}
-        accessToken={accessToken}
-        traceUuid={evaluationsFor?.uuid ?? null}
-        messageId={evaluationsFor?.message_id}
-      />
     </>
   );
 }

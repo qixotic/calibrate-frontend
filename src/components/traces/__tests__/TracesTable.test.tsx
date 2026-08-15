@@ -5,19 +5,6 @@ import {
   formatTraceDate,
 } from "../TracesTable";
 import type { TraceSummary } from "@/lib/tracesApi";
-import { fetchTraceEvaluations } from "@/lib/traceEvalApi";
-
-jest.mock("../../../lib/traceEvalApi", () => ({
-  __esModule: true,
-  fetchTraceEvaluations: jest.fn(),
-  formatVerdict: jest.requireActual("../../../lib/traceEvalApi").formatVerdict,
-}));
-jest.mock("../../../lib/reportError", () => ({
-  __esModule: true,
-  reportError: jest.fn(),
-}));
-
-const mockFetchEvaluations = fetchTraceEvaluations as jest.Mock;
 
 function trace(overrides: Partial<TraceSummary> = {}): TraceSummary {
   return {
@@ -37,18 +24,10 @@ function trace(overrides: Partial<TraceSummary> = {}): TraceSummary {
   };
 }
 
-beforeEach(() => {
-  mockFetchEvaluations.mockReset();
-  mockFetchEvaluations.mockResolvedValue({ trace_uuid: "t1", results: [] });
-  localStorage.setItem("access_token", "tok");
-});
-
-afterEach(() => {
-  localStorage.clear();
-});
 
 function renderTable(props: Partial<React.ComponentProps<typeof TracesTable>> = {}) {
   const onOpen = jest.fn();
+  const onOpenEvaluations = jest.fn();
   const onDelete = jest.fn();
   const onFilterConversation = jest.fn();
   const onToggleSelectAll = jest.fn();
@@ -66,12 +45,19 @@ function renderTable(props: Partial<React.ComponentProps<typeof TracesTable>> = 
       hasSelectableItems
       onToggleSelectAll={onToggleSelectAll}
       onOpen={onOpen}
+      onOpenEvaluations={onOpenEvaluations}
       onDelete={onDelete}
       onFilterConversation={onFilterConversation}
       {...props}
     />,
   );
-  return { onOpen, onDelete, onFilterConversation, onToggleSelectAll };
+  return {
+    onOpen,
+    onOpenEvaluations,
+    onDelete,
+    onFilterConversation,
+    onToggleSelectAll,
+  };
 }
 
 describe("formatTraceDate", () => {
@@ -218,31 +204,25 @@ describe("the evaluations column", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("opens the evaluator results without opening the trace itself", async () => {
+  it("asks to open the evaluator results without opening the trace itself", async () => {
     const user = setupUser();
-    const { onOpen } = renderTable({
-      traces: [trace({ eval_summary: { passed: 2, total: 3 } })],
-    });
+    const row = trace({ eval_summary: { passed: 2, total: 3 } });
+    const { onOpen, onOpenEvaluations } = renderTable({ traces: [row] });
 
     await user.click(screen.getAllByTitle("See what the evaluators found")[0]);
 
+    expect(onOpenEvaluations).toHaveBeenCalledWith(row);
     expect(onOpen).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText("What the evaluators found"),
-    ).toBeInTheDocument();
-    expect(mockFetchEvaluations).toHaveBeenCalledWith("tok", "t1");
   });
 
-  it("closes the evaluator results again", async () => {
-    const user = setupUser();
-    renderTable({ traces: [trace({ eval_summary: { passed: 2, total: 3 } })] });
-
-    await user.click(screen.getAllByTitle("See what the evaluators found")[0]);
-    await screen.findByText("What the evaluators found");
-    await user.click(screen.getByLabelText("Close"));
+  it("does not offer the results for a trace nothing has scored", () => {
+    const { onOpenEvaluations } = renderTable({
+      traces: [trace({ eval_summary: null })],
+    });
 
     expect(
-      screen.queryByText("What the evaluators found"),
+      screen.queryByTitle("See what the evaluators found"),
     ).not.toBeInTheDocument();
+    expect(onOpenEvaluations).not.toHaveBeenCalled();
   });
 });
