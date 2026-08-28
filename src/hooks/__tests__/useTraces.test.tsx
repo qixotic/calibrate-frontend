@@ -451,4 +451,57 @@ describe("useTraces", () => {
     unmount();
     setIntervalSpy.mockRestore();
   });
+
+  it("does not let a slower silent poll overwrite a newer status", async () => {
+    const setIntervalSpy = jest.spyOn(window, "setInterval");
+    mockFetchTraces.mockResolvedValue(
+      page([{ uuid: "t1", latest_run_status: "pending" }], 1),
+    );
+    const { result, unmount } = renderHook(() =>
+      useTraces({ accessToken: "tok", agentId: "ag-1" }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const pollCall = setIntervalSpy.mock.calls.find(
+      (call) => call[1] === POLLING_INTERVAL_MS,
+    );
+    expect(pollCall).toBeDefined();
+
+    let resolveSlow: (value: unknown) => void = () => {};
+    const slow = new Promise((resolve) => {
+      resolveSlow = resolve;
+    });
+    mockFetchTraces.mockReturnValueOnce(slow);
+    mockFetchTraces.mockResolvedValueOnce(
+      page(
+        [
+          {
+            uuid: "t1",
+            latest_run_status: "completed",
+            passed: true,
+            n_passed: 1,
+            n_total: 1,
+          },
+        ],
+        1,
+      ),
+    );
+
+    await act(async () => {
+      (pollCall![0] as () => void)();
+    });
+    await act(async () => {
+      (pollCall![0] as () => void)();
+    });
+    await waitFor(() =>
+      expect(result.current.items[0].latest_run_status).toBe("completed"),
+    );
+
+    await act(async () => {
+      resolveSlow(page([{ uuid: "t1", latest_run_status: "pending" }], 1));
+      await slow;
+    });
+    expect(result.current.items[0].latest_run_status).toBe("completed");
+    unmount();
+    setIntervalSpy.mockRestore();
+  });
 });

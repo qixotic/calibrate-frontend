@@ -93,7 +93,13 @@ describe("parseAutoScoreEnableError", () => {
     );
     expect(parseAutoScoreEnableError(err)).toEqual({
       message: "There are no evaluators that can score this agent's traces",
-      ineligible: [{ name: "Correctness", reason: "declares_variables" }],
+      ineligible: [
+        {
+          evaluator_uuid: "ev-1",
+          name: "Correctness",
+          reason: "declares_variables",
+        },
+      ],
     });
   });
 
@@ -114,10 +120,31 @@ describe("parseAutoScoreEnableError", () => {
       parseAutoScoreEnableError(
         new Error(
           `Request failed: 422 - ${JSON.stringify({
+            detail: [{ loc: ["body"], msg: "Field required", type: "missing" }],
+          })}`,
+        ),
+      ),
+    ).toBeNull();
+    expect(
+      parseAutoScoreEnableError(
+        new Error(
+          `Request failed: 422 - ${JSON.stringify({
+            detail: { error: "There are no eligible evaluators configured for this agent" },
+          })}`,
+        ),
+      ),
+    ).toBeNull();
+    expect(
+      parseAutoScoreEnableError(
+        new Error(
+          `Request failed: 422 - ${JSON.stringify({
             detail: { ineligible: [null, { name: 1 }, { name: "X", reason: "declares_variables" }] },
           })}`,
         ),
-      )?.ineligible,
-    ).toEqual([{ name: "X", reason: "declares_variables" }]);
+      ),
+    ).toEqual({
+      message: "There are no evaluators that can score this agent's traces",
+      ineligible: [{ evaluator_uuid: "", name: "X", reason: "declares_variables" }],
+    });
   });
 });

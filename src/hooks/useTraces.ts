@@ -67,7 +67,9 @@ export function useTraces({
       { silent = false }: { silent?: boolean } = {},
     ): Promise<number> => {
       if (!accessToken) return 0;
-      const requestId = silent ? requestIdRef.current : ++requestIdRef.current;
+      // Silent polls get their own id too: two overlapping 3s refreshes
+      // must not let the slower one write an older status back onto the page.
+      const requestId = ++requestIdRef.current;
       if (!silent) {
         setIsLoading(true);
         setError(null);

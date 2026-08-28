@@ -42,15 +42,16 @@ const blocked = {
   ],
 };
 
-function setup(enabled = false) {
+function setup(enabled = false, isActive = true) {
   return renderHook(
-    (props: { enabled: boolean }) =>
+    (props: { enabled: boolean; isActive: boolean }) =>
       useAgentTraceScoring({
         accessToken: "tok",
         agentUuid: "ag-1",
         enabled: props.enabled,
+        isActive: props.isActive,
       }),
-    { initialProps: { enabled } },
+    { initialProps: { enabled, isActive } },
   );
 }
 
@@ -124,6 +125,7 @@ it("records when eligibility cannot be loaded", async () => {
     expect(result.current.eligibilityError).toMatch(/Could not check/),
   );
   expect(result.current.canEnable).toBe(false);
+  expect(result.current.enableBlocked).toBe(false);
   expect(mockReportError).toHaveBeenCalled();
 });
 
@@ -134,7 +136,11 @@ it("surfaces a 422 with ineligible reasons when enabling is refused", async () =
         detail: {
           error: "There are no eligible evaluators configured for this agent",
           ineligible: [
-            { name: "Correctness", reason: "declares_variables" },
+            {
+              evaluator_uuid: "ev-2",
+              name: "Correctness",
+              reason: "declares_variables",
+            },
           ],
         },
       })}`,
@@ -147,7 +153,14 @@ it("surfaces a 422 with ineligible reasons when enabling is refused", async () =
     await result.current.setEnabled(true);
   });
   expect(result.current.saveError).toMatch(/no evaluators/);
-  expect(result.current.eligibility?.ineligible[0].name).toBe("Correctness");
+  expect(result.current.eligibility?.eligible).toEqual([]);
+  expect(result.current.eligibility?.ineligible[0]).toEqual({
+    evaluator_uuid: "ev-2",
+    name: "Correctness",
+    reason: "declares_variables",
+  });
+  expect(result.current.enableBlocked).toBe(true);
+  expect(result.current.canEnable).toBe(false);
   expect(mockReportError).toHaveBeenCalled();
 });
 
@@ -202,3 +215,130 @@ it("does nothing without an access token", async () => {
   expect(mockEligibility).not.toHaveBeenCalled();
   expect(mockSetFlag).not.toHaveBeenCalled();
 });
+
+it("does not treat a missing eligibility payload as blocked while the first check is in flight", async () => {
+  let resolveEligibility: (value: unknown) => void = () => {};
+  mockEligibility.mockReturnValue(
+    new Promise((resolve) => {
+      resolveEligibility = resolve;
+    }),
+  );
+  const { result } = setup(false);
+  expect(result.current.isLoadingEligibility).toBe(true);
+  expect(result.current.eligibility).toBeNull();
+  expect(result.current.enableBlocked).toBe(false);
+  expect(result.current.canEnable).toBe(false);
+
+  await act(async () => {
+    resolveEligibility(blocked);
+  });
+  await waitFor(() => expect(result.current.enableBlocked).toBe(true));
+});
+
+it("does not fetch until the traces tab is on screen, then refetches when it returns", async () => {
+  const { rerender } = renderHook(
+    (props: { isActive: boolean }) =>
+      useAgentTraceScoring({
+        accessToken: "tok",
+        agentUuid: "ag-1",
+        enabled: false,
+        isActive: props.isActive,
+      }),
+    { initialProps: { isActive: false } },
+  );
+  expect(mockEligibility).not.toHaveBeenCalled();
+
+  rerender({ isActive: true });
+  await waitFor(() => expect(mockEligibility).toHaveBeenCalledTimes(1));
+
+  mockEligibility.mockResolvedValue(blocked);
+  rerender({ isActive: false });
+  rerender({ isActive: true });
+  await waitFor(() => expect(mockEligibility).toHaveBeenCalledTimes(2));
+});
+
+it("ignores a slower eligibility response after the agent changes", async () => {
+  let resolveFirst: (value: unknown) => void = () => {};
+  mockEligibility.mockImplementation((_token: string, uuid: string) => {
+    if (uuid === "ag-a") {
+      return new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+    }
+    return Promise.resolve(eligible);
+  });
+
+  const { result, rerender } = renderHook(
+    (props: { agentUuid: string }) =>
+      useAgentTraceScoring({
+        accessToken: "tok",
+        agentUuid: props.agentUuid,
+        enabled: false,
+      }),
+    { initialProps: { agentUuid: "ag-a" } },
+  );
+
+  rerender({ agentUuid: "ag-b" });
+  await waitFor(() => expect(result.current.canEnable).toBe(true));
+
+  await act(async () => {
+    resolveFirst(blocked);
+  });
+  expect(result.current.canEnable).toBe(true);
+  expect(result.current.enableBlocked).toBe(false);
+  expect(result.current.eligibility?.eligible[0].name).toBe("Tone");
+});
+
+it("ignores a slower eligibility failure after the agent changes", async () => {
+  let rejectFirst: (error: unknown) => void = () => {};
+  mockEligibility.mockImplementation((_token: string, uuid: string) => {
+    if (uuid === "ag-a") {
+      return new Promise((_, reject) => {
+        rejectFirst = reject;
+      });
+    }
+    return Promise.resolve(eligible);
+  });
+
+  const { result, rerender } = renderHook(
+    (props: { agentUuid: string }) =>
+      useAgentTraceScoring({
+        accessToken: "tok",
+        agentUuid: props.agentUuid,
+        enabled: false,
+      }),
+    { initialProps: { agentUuid: "ag-a" } },
+  );
+
+  rerender({ agentUuid: "ag-b" });
+  await waitFor(() => expect(result.current.canEnable).toBe(true));
+
+  await act(async () => {
+    rejectFirst(new Error("offline"));
+  });
+  expect(result.current.canEnable).toBe(true);
+  expect(result.current.eligibilityError).toBeNull();
+});
+
+it("does not treat a validation 422 as an empty eligibility partition", async () => {
+  mockSetFlag.mockRejectedValue(
+    new Error(
+      `Request failed: 422 - ${JSON.stringify({
+        detail: [
+          { loc: ["body", "name"], msg: "Field required", type: "missing" },
+        ],
+      })}`,
+    ),
+  );
+  const { result } = setup(false);
+  await waitFor(() => expect(result.current.canEnable).toBe(true));
+
+  await act(async () => {
+    await result.current.setEnabled(true);
+  });
+  expect(result.current.enableBlocked).toBe(false);
+  expect(result.current.canEnable).toBe(true);
+  expect(result.current.eligibility?.eligible).toHaveLength(1);
+  expect(result.current.saveError).toMatch(/Field required/);
+});
+

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, setupUser } from "@/test-utils";
+import { act, render, screen, waitFor, setupUser } from "@/test-utils";
 import { TraceScoringToggle } from "../TraceScoringToggle";
 import {
   fetchTraceScoringEligibility,
@@ -135,6 +135,36 @@ it("enables scoring when an eligible evaluator is linked", async () => {
   );
 });
 
+it("names every eligible evaluator when more than one can score", async () => {
+  mockEligibility.mockResolvedValue({
+    eligible: [
+      {
+        evaluator_uuid: "ev-1",
+        evaluator_version_id: "ver-1",
+        name: "Tone",
+      },
+      {
+        evaluator_uuid: "ev-2",
+        evaluator_version_id: "ver-2",
+        name: "Helpfulness",
+      },
+    ],
+    ineligible: [],
+  });
+  render(
+    <TraceScoringToggle
+      agentUuid="ag-1"
+      accessToken="tok"
+      enabled={false}
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByText("Tone, Helpfulness will score new traces."),
+    ).toBeInTheDocument(),
+  );
+});
+
 it("explains when eligibility cannot be checked", async () => {
   mockEligibility.mockRejectedValue(new Error("offline"));
   render(
@@ -152,4 +182,87 @@ it("explains when eligibility cannot be checked", async () => {
   expect(
     screen.getByRole("switch", { name: "Score new traces automatically" }),
   ).toBeDisabled();
+  expect(
+    screen.queryByText(/Scoring cannot be turned on/),
+  ).not.toBeInTheDocument();
+});
+
+it("does not claim there are no eligible evaluators while the check is still running", async () => {
+  let resolveEligibility: (value: unknown) => void = () => {};
+  mockEligibility.mockReturnValue(
+    new Promise((resolve) => {
+      resolveEligibility = resolve;
+    }),
+  );
+  render(
+    <TraceScoringToggle
+      agentUuid="ag-1"
+      accessToken="tok"
+      enabled={false}
+    />,
+  );
+
+  expect(
+    screen.getByText("Checking which evaluators can score new traces."),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText(/Scoring cannot be turned on/),
+  ).not.toBeInTheDocument();
+  const toggle = screen.getByRole("switch", {
+    name: "Score new traces automatically",
+  });
+  expect(toggle).toBeDisabled();
+  expect(toggle.getAttribute("aria-describedby")?.split(" ").length).toBe(2);
+
+  await act(async () => {
+    resolveEligibility({
+      eligible: [],
+      ineligible: [
+        {
+          evaluator_uuid: "ev-1",
+          name: "Correctness",
+          reason: "declares_variables",
+        },
+      ],
+    });
+  });
+  await waitFor(() =>
+    expect(screen.getByText(/Scoring cannot be turned on/)).toBeInTheDocument(),
+  );
+});
+
+it("keeps the heading before the switch and describes blocked state in the page", async () => {
+  mockEligibility.mockResolvedValue({
+    eligible: [],
+    ineligible: [
+      {
+        evaluator_uuid: "ev-1",
+        name: "Correctness",
+        reason: "declares_variables",
+      },
+    ],
+  });
+  render(
+    <TraceScoringToggle
+      agentUuid="ag-1"
+      accessToken="tok"
+      enabled={false}
+    />,
+  );
+  const heading = await screen.findByText("Score new traces automatically");
+  const toggle = screen.getByRole("switch", {
+    name: "Score new traces automatically",
+  });
+  expect(
+    heading.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  await waitFor(() =>
+    expect(screen.getByText(/Scoring cannot be turned on/)).toBeInTheDocument(),
+  );
+  const describedBy = toggle.getAttribute("aria-describedby") ?? "";
+  const statusNode = describedBy
+    .split(" ")
+    .map((id) => document.getElementById(id))
+    .find((node) => node?.textContent?.includes("Scoring cannot be turned on"));
+  expect(statusNode).toBeTruthy();
 });

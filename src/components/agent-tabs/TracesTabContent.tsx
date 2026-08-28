@@ -456,6 +456,7 @@ export function TracesTabContent({
         accessToken={accessToken}
         enabled={autoScoreTraces}
         onEnabledChange={onAutoScoreTracesChange}
+        isActive={isActive}
       />
 
       {error && (

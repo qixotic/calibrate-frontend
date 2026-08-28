@@ -220,6 +220,9 @@ export function TracesTable({
               <TraceOutputCell trace={trace} />
             </div>
             <div className="mt-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                Scores
+              </div>
               <TraceScoringSummary trace={trace} />
             </div>
             <div className="flex items-center gap-2 mt-2">

@@ -171,7 +171,7 @@ describe("TracesTable", () => {
 
     expect(screen.getByText("Input")).toBeInTheDocument();
     expect(screen.getByText("Output")).toBeInTheDocument();
-    expect(screen.getByText("Scores")).toBeInTheDocument();
+    expect(screen.getAllByText("Scores")).toHaveLength(2);
     expect(screen.queryByText("Response")).not.toBeInTheDocument();
     for (const name of ["Conversation", "Turns", "Tools"]) {
       expect(screen.queryByText(name)).not.toBeInTheDocument();

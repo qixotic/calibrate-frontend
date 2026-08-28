@@ -249,12 +249,14 @@ jest.mock("../../traces/TraceScoringToggle", () => ({
   TraceScoringToggle: ({
     agentUuid,
     enabled,
+    isActive,
   }: {
     agentUuid: string;
     enabled: boolean;
+    isActive?: boolean;
   }) => (
     <div data-testid="trace-scoring-toggle">
-      {agentUuid}:{enabled ? "on" : "off"}
+      {agentUuid}:{enabled ? "on" : "off"}:{isActive === false ? "hidden" : "active"}
     </div>
   ),
 }));
@@ -389,7 +391,7 @@ describe("TracesTabContent", () => {
       />,
     );
     expect(screen.getByTestId("trace-scoring-toggle")).toHaveTextContent(
-      "agent-1:on",
+      "agent-1:on:hidden",
     );
     expect(lastTracesArgs().poll).toBe(false);
   });
