@@ -14,14 +14,19 @@ import {
 import { Section } from "@/components/human-labelling/item-panes/shared";
 import {
   fetchTrace,
+  fetchTraceScores,
   traceInputTurns,
   TraceDetail,
   TraceMetadataEntry,
   TraceOutput,
+  TraceScoringRun,
   TraceTurn,
 } from "@/lib/tracesApi";
+import { isTraceScoringInProgress } from "@/lib/traceScoring";
+import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { reportError } from "@/lib/reportError";
 import { formatTraceDate } from "./TracesTable";
+import { TraceScoreHistory } from "./TraceScoreHistory";
 
 type TraceDetailDialogProps = {
   isOpen: boolean;
@@ -273,7 +278,14 @@ export function TraceDetailDialog({
   } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scoreRuns, setScoreRuns] = useState<TraceScoringRun[]>([]);
+  const [scoresLoading, setScoresLoading] = useState(false);
+  const [scoresError, setScoresError] = useState<string | null>(null);
   const trace = isOpen && loaded?.uuid === traceUuid ? loaded.trace : null;
+  const visibleScoreRuns = loaded?.uuid === traceUuid ? scoreRuns : [];
+  const hasOpenScoreRuns = visibleScoreRuns.some((run) =>
+    isTraceScoringInProgress(run.status),
+  );
 
   useEffect(() => {
     if (!isOpen || !traceUuid || !accessToken) return;
@@ -282,15 +294,33 @@ export function TraceDetailDialog({
       setIsLoading(true);
       setError(null);
       setLoaded(null);
+      setScoreRuns([]);
+      setScoresError(null);
+      setScoresLoading(true);
       try {
-        const data = await fetchTrace(accessToken, traceUuid);
-        if (!cancelled) setLoaded({ uuid: traceUuid, trace: data });
+        const [data, scores] = await Promise.all([
+          fetchTrace(accessToken, traceUuid),
+          fetchTraceScores(accessToken, traceUuid).catch((err) => {
+            reportError("Error fetching trace scores:", err);
+            if (!cancelled) {
+              setScoresError("Could not load scores for this trace.");
+            }
+            return { runs: [] as TraceScoringRun[] };
+          }),
+        ]);
+        if (!cancelled) {
+          setLoaded({ uuid: traceUuid, trace: data });
+          setScoreRuns(scores.runs ?? []);
+        }
       } catch (err) {
         reportError("Error fetching trace:", err);
         if (!cancelled)
           setError("Failed to load this trace. Please try again.");
       } finally {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+          setScoresLoading(false);
+        }
       }
     };
     load();
@@ -298,6 +328,24 @@ export function TraceDetailDialog({
       cancelled = true;
     };
   }, [isOpen, traceUuid, accessToken]);
+
+  useEffect(() => {
+    if (!isOpen || !traceUuid || !accessToken || !hasOpenScoreRuns) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const scores = await fetchTraceScores(accessToken, traceUuid);
+        if (!cancelled) setScoreRuns(scores.runs ?? []);
+      } catch (err) {
+        reportError("Error polling trace scores:", err);
+      }
+    };
+    const timer = window.setInterval(poll, POLLING_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isOpen, traceUuid, accessToken, hasOpenScoreRuns]);
 
   useDialogNavKeys({ isOpen, onClose, hasPrev, onPrev, hasNext, onNext });
 
@@ -401,6 +449,18 @@ export function TraceDetailDialog({
                   showVerdict={false}
                 />
               ))}
+            {trace && (
+              <div className="p-5 md:p-6 border-t border-border">
+                <h3 className="text-sm font-semibold text-foreground mb-3">
+                  Scores
+                </h3>
+                <TraceScoreHistory
+                  runs={visibleScoreRuns}
+                  isLoading={scoresLoading}
+                  error={scoresError}
+                />
+              </div>
+            )}
           </div>
           {trace && (
             <div className="md:w-96 border-t md:border-t-0 md:border-l border-border overflow-y-auto shrink-0">

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTraces, TraceOutputFilter, TraceSummary } from "@/lib/tracesApi";
+import { pageHasOpenTraceScoring } from "@/lib/traceScoring";
+import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { reportError } from "@/lib/reportError";
 
 type UseTracesArgs = {
@@ -14,6 +16,8 @@ type UseTracesArgs = {
   q?: string;
   /** Keep only replies or only tool calls. "all" keeps everything. */
   outputType?: TraceOutputFilter;
+  /** When false, skip polling open scoring runs (tab is off screen). */
+  poll?: boolean;
 };
 
 /**
@@ -28,6 +32,7 @@ export function useTraces({
   pageSize = 50,
   q = "",
   outputType = "all",
+  poll = true,
 }: UseTracesArgs) {
   const [items, setItems] = useState<TraceSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -57,11 +62,16 @@ export function useTraces({
   }, [agentId, pageSize, q, outputType]);
 
   const load = useCallback(
-    async (targetOffset: number): Promise<number> => {
+    async (
+      targetOffset: number,
+      { silent = false }: { silent?: boolean } = {},
+    ): Promise<number> => {
       if (!accessToken) return 0;
-      const requestId = ++requestIdRef.current;
-      setIsLoading(true);
-      setError(null);
+      const requestId = silent ? requestIdRef.current : ++requestIdRef.current;
+      if (!silent) {
+        setIsLoading(true);
+        setError(null);
+      }
       try {
         const page = await fetchTraces(accessToken, {
           limit: pageSize,
@@ -80,6 +90,7 @@ export function useTraces({
         return nextTotal;
       } catch (err) {
         if (requestId !== requestIdRef.current) return 0;
+        if (silent) return 0;
         reportError("Error fetching traces:", err);
         // Drop the last page too: leaving it on screen next to the message
         // would let the reader tick and delete rows from a failed load.
@@ -88,7 +99,7 @@ export function useTraces({
         setError("Failed to load traces. Please try again.");
         return 0;
       } finally {
-        if (requestId === requestIdRef.current) setIsLoading(false);
+        if (!silent && requestId === requestIdRef.current) setIsLoading(false);
       }
     },
     [accessToken, pageSize, agentId, q, outputType],
@@ -102,6 +113,17 @@ export function useTraces({
     const nextTotal = await load(offset);
     return nextTotal === 0;
   }, [load, offset]);
+
+  /** Re-ask for this page while any visible row is still waiting to be scored.
+   *  One list request, never one per row. */
+  const hasOpenScoring = pageHasOpenTraceScoring(items);
+  useEffect(() => {
+    if (!poll || !accessToken || isLoading || !hasOpenScoring) return;
+    const timer = window.setInterval(() => {
+      void load(offset, { silent: true });
+    }, POLLING_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [poll, accessToken, isLoading, hasOpenScoring, offset, load]);
 
   /** Re-sync after `count` rows were deleted, clamping the page back into
    *  range when the current offset would land past the new end. */

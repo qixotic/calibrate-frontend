@@ -1,4 +1,4 @@
-import { apiGet, apiPost, getBackendUrl, Paginated } from "./api";
+import { apiGet, apiPost, apiPut, getBackendUrl, Paginated } from "./api";
 
 /** One turn of stored conversation history, OpenAI chat format. Extra keys
  *  (`tool_calls`, `tool_call_id`, `name`, ...) are preserved by the backend
@@ -48,6 +48,72 @@ export type TraceSummary = {
   tool_call_count: number;
   metadata_count: number;
   created_at: string;
+  /** Latest scoring run for this trace. Absent when scoring has never run. */
+  latest_run_status?: TraceScoringStatus | null;
+  /** Whether every evaluator on the latest completed run passed. Never an
+   *  average: binary passes on a true match, rating at the top of its scale. */
+  passed?: boolean | null;
+  /** How many evaluators passed on the latest completed run. */
+  n_passed?: number | null;
+  /** How many evaluators the latest completed run scored. */
+  n_total?: number | null;
+};
+
+/** Status of one durable trace-scoring run. */
+export type TraceScoringStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export type TraceScoreResult = {
+  evaluator_uuid: string;
+  name: string;
+  evaluator_type?: "llm" | "llm-general" | null;
+  output_type: "binary" | "rating";
+  scale_min?: number | null;
+  scale_max?: number | null;
+  match?: boolean | null;
+  score?: number | null;
+  reasoning?: string | null;
+  evaluator_version_id: string;
+  passed: boolean;
+};
+
+export type TraceScoringRun = {
+  run_uuid: string;
+  status: TraceScoringStatus;
+  created_at: string;
+  completed_at?: string | null;
+  error?: string | null;
+  results: TraceScoreResult[];
+};
+
+export type TraceScoresResponse = {
+  runs: TraceScoringRun[];
+};
+
+export type TraceScoringIneligibleReason =
+  | "wrong_type_for_agent"
+  | "no_live_version"
+  | "declares_variables";
+
+export type TraceScoringEligibleEvaluator = {
+  evaluator_uuid: string;
+  evaluator_version_id: string;
+  name: string;
+};
+
+export type TraceScoringIneligibleEvaluator = {
+  evaluator_uuid: string;
+  name: string;
+  reason: TraceScoringIneligibleReason;
+};
+
+export type TraceScoringEligibility = {
+  eligible: TraceScoringEligibleEvaluator[];
+  ineligible: TraceScoringIneligibleEvaluator[];
 };
 
 export type TraceDetail = {
@@ -132,6 +198,41 @@ export async function fetchTrace(
   traceUuid: string,
 ): Promise<TraceDetail> {
   return apiGet<TraceDetail>(`/traces/${traceUuid}`, accessToken);
+}
+
+/** Every scoring run for this trace, newest first. */
+export async function fetchTraceScores(
+  accessToken: string,
+  traceUuid: string,
+): Promise<TraceScoresResponse> {
+  return apiGet<TraceScoresResponse>(
+    `/traces/${encodeURIComponent(traceUuid)}/scores`,
+    accessToken,
+  );
+}
+
+/** JWT-only: which linked evaluators can score this agent's traces. */
+export async function fetchTraceScoringEligibility(
+  accessToken: string,
+  agentUuid: string,
+): Promise<TraceScoringEligibility> {
+  return apiGet<TraceScoringEligibility>(
+    `/agents/${encodeURIComponent(agentUuid)}/trace-scoring-eligibility`,
+    accessToken,
+  );
+}
+
+/** Turn automatic scoring of newly ingested traces on or off. */
+export async function setAgentAutoScoreTraces(
+  accessToken: string,
+  agentUuid: string,
+  enabled: boolean,
+): Promise<{ auto_score_traces: boolean }> {
+  return apiPut<{ auto_score_traces: boolean }>(
+    `/agents/${encodeURIComponent(agentUuid)}`,
+    accessToken,
+    { auto_score_traces: enabled },
+  );
 }
 
 /**

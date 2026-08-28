@@ -9,7 +9,7 @@ import type { TraceSummary } from "@/lib/tracesApi";
 // The list itself comes from `useTraces`; this test drives it directly so the
 // tab's own behaviour (toolbar, selection, empty state) is what's exercised.
 const mockUseTraces = jest.fn();
-const mockUseDialogUrlParam = jest.fn((_args: unknown) => ({
+const mockUseDialogUrlParam = jest.fn(() => ({
   setParam: jest.fn(),
 }));
 const handleDeleted = jest.fn();
@@ -245,6 +245,19 @@ jest.mock("../../traces/ConvertTracesToTestsDialog", () => ({
       </div>
     ) : null,
 }));
+jest.mock("../../traces/TraceScoringToggle", () => ({
+  TraceScoringToggle: ({
+    agentUuid,
+    enabled,
+  }: {
+    agentUuid: string;
+    enabled: boolean;
+  }) => (
+    <div data-testid="trace-scoring-toggle">
+      {agentUuid}:{enabled ? "on" : "off"}
+    </div>
+  ),
+}));
 
 const trace = (over: Partial<TraceSummary> = {}): TraceSummary => ({
   uuid: "trace-1",
@@ -357,6 +370,7 @@ describe("TracesTabContent", () => {
     );
     // Nothing typed yet, so the whole list is asked for.
     expect(lastTracesArgs().q).toBe("");
+    expect(lastTracesArgs().poll).toBe(true);
     expect(lastTracesArgs()).not.toHaveProperty("conversationId");
     expect(mockUseDialogUrlParam).toHaveBeenCalledWith(
       expect.objectContaining({ param: "traceId" }),
@@ -364,6 +378,20 @@ describe("TracesTabContent", () => {
     expect(mockUseDialogUrlParam).not.toHaveBeenCalledWith(
       expect.objectContaining({ param: "conversation_id" }),
     );
+  });
+
+  it("shows the scoring toggle and pauses polling while the tab is hidden", () => {
+    render(
+      <TracesTabContent
+        {...tabProps}
+        autoScoreTraces
+        isActive={false}
+      />,
+    );
+    expect(screen.getByTestId("trace-scoring-toggle")).toHaveTextContent(
+      "agent-1:on",
+    );
+    expect(lastTracesArgs().poll).toBe(false);
   });
 
   it("hides the per page choice while every trace fits on one page", () => {

@@ -70,6 +70,7 @@ type AgentData = {
   name: string;
   type?: "agent" | "connection";
   interaction_type?: "conversation" | "general";
+  auto_score_traces?: boolean;
   config: Record<string, any>;
   created_at: string;
   updated_at: string;
@@ -1356,6 +1357,15 @@ export function AgentDetail({
             <TracesTabContent
               agentUuid={agentUuid}
               agentNature={agent.interaction_type ?? "conversation"}
+              autoScoreTraces={!!agent.auto_score_traces}
+              onAutoScoreTracesChange={(enabled) =>
+                setAgent((current) =>
+                  current
+                    ? { ...current, auto_score_traces: enabled }
+                    : current,
+                )
+              }
+              isActive={activeTab === "traces"}
               onTestsCreated={() => setTestsReloadKey((k) => k + 1)}
               onViewTests={() => performTabSwitch("tests")}
               onAgentDefaultsAttached={() =>
