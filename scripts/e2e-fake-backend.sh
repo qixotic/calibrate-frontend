@@ -71,19 +71,25 @@ command -v uv >/dev/null 2>&1 || { echo "ERROR: 'uv' is required to run the back
 DB_DIR="$(mktemp -d)"
 echo "==> Starting FAKE_AI backend on :${PORT}"
 echo "    dir=${BACKEND_DIR}  db=${DB_DIR}"
+# Track uv/uvicorn itself, not a wrapper subshell. Killing the subshell left
+# uvicorn alive long enough for the trace-scoring worker to log sqlite
+# "unable to open database file" after cleanup removed DB_ROOT_DIR. `exec`
+# makes BACKEND_PID the process whose SIGTERM runs FastAPI lifespan to
+# completion; `wait` then returns before we delete the throwaway DB.
 (
   cd "${BACKEND_DIR}/src"
-  FAKE_AI_PROVIDERS=1 \
-  CORS_ALLOWED_ORIGINS="http://localhost:${DEV_PORT}" \
-  DB_ROOT_DIR="${DB_DIR}" \
-  JWT_SECRET_KEY="${JWT_SECRET_KEY:-e2e-fake-secret}" \
-  uv run uvicorn main:app --port "${PORT}"
+  exec env \
+    FAKE_AI_PROVIDERS=1 \
+    CORS_ALLOWED_ORIGINS="http://localhost:${DEV_PORT}" \
+    DB_ROOT_DIR="${DB_DIR}" \
+    JWT_SECRET_KEY="${JWT_SECRET_KEY:-e2e-fake-secret}" \
+    uv run uvicorn main:app --port "${PORT}"
 ) &
 BACKEND_PID=$!
 
 cleanup() {
   echo "==> Stopping FAKE_AI backend (pid ${BACKEND_PID})"
-  kill "${BACKEND_PID}" 2>/dev/null || true
+  kill -TERM "${BACKEND_PID}" 2>/dev/null || true
   wait "${BACKEND_PID}" 2>/dev/null || true
   rm -rf "${DB_DIR}"
 }
@@ -107,6 +113,9 @@ done
 # --- Only now start the E2E run -----------------------------------------------
 export E2E_FAKE_AI=1
 export NEXT_PUBLIC_BACKEND_URL="http://localhost:${PORT}"
+# Next.js Auth secret for the Playwright-booted dev server. CI sets this on
+# the job; keep a local default so the focused authenticated run can boot.
+export AUTH_SECRET="${AUTH_SECRET:-e2e-placeholder-secret-not-used}"
 echo "==> Running E2E against ${NEXT_PUBLIC_BACKEND_URL} (E2E_FAKE_AI=1)"
 
 if [[ "$#" -gt 0 ]]; then

@@ -257,4 +257,140 @@ test.describe("Agent Traces tab (authenticated, real backend)", () => {
     await deleteAllTracesOfAgent(page, headers, agentUuid);
     await deleteAgent(page, name);
   });
+
+  // Automatic scoring of *new* traces. Needs the fake-AI backend so the
+  // judge returns the canned pass + reasoning without a real model call.
+  test("scores a new trace automatically after scoring is turned on", async ({
+    page,
+  }) => {
+    test.skip(
+      process.env.E2E_FAKE_AI !== "1",
+      "needs FAKE_AI_PROVIDERS (scripts/e2e-fake-backend.sh)",
+    );
+    test.setTimeout(90_000);
+
+    const stamp = Date.now();
+    const agentName = `E2E Trace Scoring Agent ${stamp}`;
+    const evalName = `E2E Trace Scoring Eval ${stamp}`;
+    const agentUuid = await createAgent(page, agentName);
+    const headers = await ingestHeaders(page);
+    let evalUuid = "";
+
+    try {
+      const promptRes = await page.request.get(
+        `${BACKEND}/evaluators/default-prompt?purpose=llm`,
+        { headers },
+      );
+      expect(promptRes.ok()).toBeTruthy();
+      const prompt = (await promptRes.json()) as {
+        evaluator_type: string;
+        data_type: string;
+        kind: string;
+        output_type: string;
+        judge_model: string;
+        system_prompt: string;
+        output_config: unknown;
+      };
+      const createdEval = await page.request.post(`${BACKEND}/evaluators`, {
+        headers,
+        data: {
+          name: evalName,
+          evaluator_type: prompt.evaluator_type,
+          data_type: prompt.data_type,
+          kind: prompt.kind,
+          output_type: prompt.output_type,
+          version: {
+            judge_model: prompt.judge_model,
+            system_prompt: prompt.system_prompt,
+            output_config: prompt.output_config,
+          },
+        },
+      });
+      if (!createdEval.ok()) {
+        throw new Error(
+          `create evaluator failed (${createdEval.status()}): ${await createdEval.text()}`,
+        );
+      }
+      evalUuid = ((await createdEval.json()) as { uuid: string }).uuid;
+      expect(evalUuid).toBeTruthy();
+
+      const linked = await page.request.post(
+        `${BACKEND}/agents/${agentUuid}/evaluators`,
+        { headers, data: { evaluator_ids: [evalUuid] } },
+      );
+      expect(linked.ok()).toBeTruthy();
+
+      await page.goto(`/agents/${agentUuid}`);
+      await waitForOrgReady(page);
+      await openTracesTab(page);
+
+      await expect(
+        page.getByText(`${evalName} will score new traces.`),
+      ).toBeVisible({ timeout: 15000 });
+      const scoringSwitch = page.getByRole("switch", {
+        name: "Score new traces automatically",
+      });
+      await expect(scoringSwitch).toBeEnabled();
+      await scoringSwitch.click();
+      await expect(scoringSwitch).toHaveAttribute("aria-checked", "true");
+
+      const msgId = `e2e-score-${stamp}`;
+      const ingested = await page.request.post(`${BACKEND}/traces`, {
+        headers,
+        data: {
+          agent_id: agentUuid,
+          message_id: msgId,
+          conversation_id: `e2e-score-conv-${stamp}`,
+          input: [{ role: "user", content: `Score this reply ${msgId}` }],
+          output: { response: "Boosters are due at 16 months." },
+        },
+      });
+      expect(ingested.ok()).toBeTruthy();
+      const traceUuid = (await ingested.json()).uuid as string;
+
+      // An agent with no traces yet stays on the getting-started steps, which
+      // do not poll. Ask it to look once the ingest has landed; the list's
+      // 3s poll then covers any scoring still in flight.
+      await page.getByRole("button", { name: "Check that it arrived" }).click();
+      await expect(
+        page.getByRole("button", { name: "Check for traces" }),
+      ).toBeVisible();
+      await expect(async () => {
+        const check = page.getByRole("button", { name: "Check for traces" });
+        if (await check.isVisible().catch(() => false)) {
+          await check.click();
+        }
+        await expect(page.getByText(msgId).first()).toBeVisible({
+          timeout: 4000,
+        });
+      }).toPass({ timeout: 20000 });
+      const row = page.locator("div.grid").filter({ hasText: msgId });
+      await expect(row.getByText("Passed", { exact: true }).first()).toBeVisible(
+        { timeout: 30000 },
+      );
+      await expect(row.getByText("1 of 1 passed").first()).toBeVisible();
+
+      await page.getByText(msgId).first().click();
+      const dialog = page.locator(".fixed.inset-0.z-50");
+      await expect(
+        dialog.getByRole("heading", { name: traceUuid, exact: true }),
+      ).toBeVisible();
+      await expect(dialog.getByText("Latest scores")).toBeVisible();
+      await expect(dialog.getByText(evalName)).toBeVisible();
+      await expect(dialog.getByText("1 of 1 passed")).toBeVisible();
+      await dialog.getByRole("button", { name: "See reasoning" }).click();
+      await expect(
+        dialog.getByText("Simulated judge reasoning: criteria satisfied."),
+      ).toBeVisible();
+      await dialog.getByRole("button", { name: "Close" }).click();
+    } finally {
+      await deleteAllTracesOfAgent(page, headers, agentUuid);
+      if (evalUuid) {
+        await page.request.delete(`${BACKEND}/evaluators/${evalUuid}`, {
+          headers,
+        });
+      }
+      await deleteAgent(page, agentName);
+    }
+  });
 });
