@@ -73,11 +73,13 @@ echo "==> Starting FAKE_AI backend on :${PORT}"
 echo "    dir=${BACKEND_DIR}  db=${DB_DIR}"
 (
   cd "${BACKEND_DIR}/src"
-  FAKE_AI_PROVIDERS=1 \
-  CORS_ALLOWED_ORIGINS="http://localhost:${DEV_PORT}" \
-  DB_ROOT_DIR="${DB_DIR}" \
-  JWT_SECRET_KEY="${JWT_SECRET_KEY:-e2e-fake-secret}" \
-  uv run uvicorn main:app --port "${PORT}"
+  # Make cleanup wait for uvicorn before removing its temporary database.
+  exec env \
+    FAKE_AI_PROVIDERS=1 \
+    CORS_ALLOWED_ORIGINS="http://localhost:${DEV_PORT}" \
+    DB_ROOT_DIR="${DB_DIR}" \
+    JWT_SECRET_KEY="${JWT_SECRET_KEY:-e2e-fake-secret}" \
+    uv run uvicorn main:app --port "${PORT}"
 ) &
 BACKEND_PID=$!
 
