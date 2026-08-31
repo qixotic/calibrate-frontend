@@ -257,6 +257,21 @@ jest.mock("../../traces/ConvertTracesToTestsDialog", () => ({
       </div>
     ) : null,
 }));
+jest.mock("../../traces/TraceScoringToggle", () => ({
+  TraceScoringToggle: ({
+    agentUuid,
+    enabled,
+    isActive,
+  }: {
+    agentUuid: string;
+    enabled: boolean;
+    isActive?: boolean;
+  }) => (
+    <div data-testid="trace-scoring-toggle">
+      {agentUuid}:{enabled ? "on" : "off"}:{isActive === false ? "hidden" : "active"}
+    </div>
+  ),
+}));
 
 // The labels the agent's traces carry, which the filter offers. Most tests
 // have none, so the picker stays out of the way.
@@ -401,6 +416,7 @@ describe("TracesTabContent", () => {
     );
     // Nothing typed yet, so the whole list is asked for.
     expect(lastTracesArgs().q).toBe("");
+    expect(lastTracesArgs().poll).toBe(true);
     expect(lastTracesArgs()).not.toHaveProperty("conversationId");
     expect(mockUseDialogUrlParam).toHaveBeenCalledWith(
       expect.objectContaining({ param: "traceId" }),
@@ -408,6 +424,20 @@ describe("TracesTabContent", () => {
     expect(mockUseDialogUrlParam).not.toHaveBeenCalledWith(
       expect.objectContaining({ param: "conversation_id" }),
     );
+  });
+
+  it("shows the scoring toggle and pauses polling while the tab is hidden", () => {
+    render(
+      <TracesTabContent
+        {...tabProps}
+        autoScoreTraces
+        isActive={false}
+      />,
+    );
+    expect(screen.getByTestId("trace-scoring-toggle")).toHaveTextContent(
+      "agent-1:on:hidden",
+    );
+    expect(lastTracesArgs().poll).toBe(false);
   });
 
   it("hides the per page choice while every trace fits on one page", () => {

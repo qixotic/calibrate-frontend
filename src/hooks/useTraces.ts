@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTraces, TraceOutputFilter, TraceSummary } from "@/lib/tracesApi";
+import { pageHasOpenTraceScoring } from "@/lib/traceScoring";
+import { POLLING_INTERVAL_MS } from "@/constants/polling";
 import { reportError } from "@/lib/reportError";
 
 /** Shared empty default, so a caller with no labels does not hand the hook a
@@ -20,6 +22,8 @@ type UseTracesArgs = {
   outputType?: TraceOutputFilter;
   /** Keep only traces carrying any of these labels. Empty keeps everything. */
   labels?: string[];
+  /** When false, skip polling open scoring runs (tab is off screen). */
+  poll?: boolean;
 };
 
 /**
@@ -35,6 +39,7 @@ export function useTraces({
   q = "",
   outputType = "all",
   labels = EMPTY_LABELS,
+  poll = true,
 }: UseTracesArgs) {
   // A new array on every render would restart the fetch forever, so the
   // effects and the fetch key on the labels' text rather than the array.
@@ -69,11 +74,18 @@ export function useTraces({
   }, [agentId, pageSize, q, outputType, labelKey]);
 
   const load = useCallback(
-    async (targetOffset: number): Promise<number> => {
+    async (
+      targetOffset: number,
+      { silent = false }: { silent?: boolean } = {},
+    ): Promise<number> => {
       if (!accessToken) return 0;
+      // Silent polls get their own id too: two overlapping 3s refreshes
+      // must not let the slower one write an older status back onto the page.
       const requestId = ++requestIdRef.current;
-      setIsLoading(true);
-      setError(null);
+      if (!silent) {
+        setIsLoading(true);
+        setError(null);
+      }
       try {
         const page = await fetchTraces(accessToken, {
           limit: pageSize,
@@ -94,6 +106,7 @@ export function useTraces({
         return nextTotal;
       } catch (err) {
         if (requestId !== requestIdRef.current) return 0;
+        if (silent) return 0;
         reportError("Error fetching traces:", err);
         // Drop the last page too: leaving it on screen next to the message
         // would let the reader tick and delete rows from a failed load.
@@ -102,7 +115,7 @@ export function useTraces({
         setError("Failed to load traces. Please try again.");
         return 0;
       } finally {
-        if (requestId === requestIdRef.current) setIsLoading(false);
+        if (!silent && requestId === requestIdRef.current) setIsLoading(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,6 +130,17 @@ export function useTraces({
     const nextTotal = await load(offset);
     return nextTotal === 0;
   }, [load, offset]);
+
+  /** Re-ask for this page while any visible row is still waiting to be scored.
+   *  One list request, never one per row. */
+  const hasOpenScoring = pageHasOpenTraceScoring(items);
+  useEffect(() => {
+    if (!poll || !accessToken || isLoading || !hasOpenScoring) return;
+    const timer = window.setInterval(() => {
+      void load(offset, { silent: true });
+    }, POLLING_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [poll, accessToken, isLoading, hasOpenScoring, offset, load]);
 
   /** Re-sync after `count` rows were deleted, clamping the page back into
    *  range when the current offset would land past the new end. */

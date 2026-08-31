@@ -106,7 +106,13 @@ jest.mock("../agent-tabs", () => ({
   },
   TracesTabContent: (props: any) => (
     <div data-testid="traces-tab-content">
-      TracesTabContent-{props.agentUuid}
+      TracesTabContent-{props.agentUuid}-{props.autoScoreTraces ? "scoring" : "off"}-{props.isActive ? "active" : "hidden"}
+      <button
+        type="button"
+        onClick={() => props.onAutoScoreTracesChange?.(!props.autoScoreTraces)}
+      >
+        ToggleScoring
+      </button>
     </div>
   ),
   SettingsTabContent: () => (
@@ -419,7 +425,7 @@ describe("AgentDetail", () => {
 
     await user.click(screen.getByText("Traces"));
     expect(screen.getByTestId("traces-tab-content")).toHaveTextContent(
-      `TracesTabContent-${buildAgent.uuid}`,
+      `TracesTabContent-${buildAgent.uuid}-off-active`,
     );
     expectVisibleTab("traces-tab-content", "tests-tab-content");
 
@@ -432,6 +438,26 @@ describe("AgentDetail", () => {
     await user.click(screen.getByText("Agent"));
     expect(screen.getByTestId("agent-tab-content")).toBeInTheDocument();
     expectVisibleTab("agent-tab-content", "settings-tab-content");
+  });
+
+  it("keeps automatic scoring on the traces tab in sync with the agent", async () => {
+    mockFetchSequenceForAgent({ ...buildAgent, auto_score_traces: true });
+    const user = setupUser();
+    render(<AgentDetail agentUuid={buildAgent.uuid} />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Build Agent")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByText("Traces"));
+    expect(screen.getByTestId("traces-tab-content")).toHaveTextContent(
+      `TracesTabContent-${buildAgent.uuid}-scoring-active`,
+    );
+
+    await user.click(screen.getByText("ToggleScoring"));
+    expect(screen.getByTestId("traces-tab-content")).toHaveTextContent(
+      `TracesTabContent-${buildAgent.uuid}-off-active`,
+    );
   });
 
   it("passes the agent's nature down to the Tests and Evaluators tabs", async () => {
@@ -485,7 +511,7 @@ describe("AgentDetail", () => {
 
     await user.click(screen.getByText("Traces"));
     expect(screen.getByTestId("traces-tab-content")).toHaveTextContent(
-      `TracesTabContent-${connectionAgent.uuid}`,
+      `TracesTabContent-${connectionAgent.uuid}-off-active`,
     );
     expectVisibleTab("traces-tab-content", "runs-tab-content");
 

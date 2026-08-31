@@ -5,6 +5,7 @@ import { ToolIcon } from "@/components/icons";
 import { SelectCheckbox } from "@/components/ui/SelectCheckbox";
 import { DeleteIconButton } from "@/components/ui";
 import type { TraceSummary, TraceToolCall } from "@/lib/tracesApi";
+import { TraceScoringSummary } from "./TraceScoringSummary";
 
 type CheckboxProps = {
   checked: boolean;
@@ -124,7 +125,7 @@ function TraceOutputCell({ trace }: { trace: TraceSummary }) {
 }
 
 const ROW_GRID =
-  "grid grid-cols-[40px_minmax(0,1fr)_minmax(0,1fr)_160px_auto] gap-4 px-4";
+  "grid grid-cols-[40px_minmax(0,1fr)_minmax(0,1fr)_minmax(7.5rem,0.7fr)_160px_auto] gap-4 px-4";
 
 /**
  * The traces list: a table on desktop and cards on mobile. Rows open the
@@ -155,6 +156,7 @@ export function TracesTable({
           </div>
           <div className="text-sm font-medium text-muted-foreground">Input</div>
           <div className="text-sm font-medium text-muted-foreground">Output</div>
+          <div className="text-sm font-medium text-muted-foreground">Scores</div>
           <div className="text-sm font-medium text-muted-foreground">Created</div>
           <div className="w-8" />
         </div>
@@ -177,6 +179,9 @@ export function TracesTable({
               </div>
               <div className="min-w-0">
                 <TraceOutputCell trace={trace} />
+              </div>
+              <div className="min-w-0">
+                <TraceScoringSummary trace={trace} />
               </div>
               <div className="text-sm text-muted-foreground whitespace-nowrap">
                 {formatTraceDate(trace.created_at)}
@@ -213,6 +218,12 @@ export function TracesTable({
             </div>
             <div className="mt-2">
               <TraceOutputCell trace={trace} />
+            </div>
+            <div className="mt-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                Scores
+              </div>
+              <TraceScoringSummary trace={trace} />
             </div>
             <div className="flex items-center gap-2 mt-2">
               <span className="text-xs text-muted-foreground">

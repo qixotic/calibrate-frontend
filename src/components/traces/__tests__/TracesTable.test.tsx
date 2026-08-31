@@ -171,12 +171,28 @@ describe("TracesTable", () => {
 
     expect(screen.getByText("Input")).toBeInTheDocument();
     expect(screen.getByText("Output")).toBeInTheDocument();
+    expect(screen.getAllByText("Scores")).toHaveLength(2);
     expect(screen.queryByText("Response")).not.toBeInTheDocument();
     for (const name of ["Conversation", "Turns", "Tools"]) {
       expect(screen.queryByText(name)).not.toBeInTheDocument();
     }
     expect(screen.queryByText("conv-1")).not.toBeInTheDocument();
     expect(screen.queryByText("3 turns")).not.toBeInTheDocument();
+  });
+
+  it("shows the latest-run pass count on the row, never an average", () => {
+    renderTable({
+      traces: [
+        trace({
+          latest_run_status: "completed",
+          passed: false,
+          n_passed: 1,
+          n_total: 2,
+        }),
+      ],
+    });
+    expect(screen.getAllByText("Did not pass").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 of 2 passed").length).toBeGreaterThan(0);
   });
 
   it("opens a trace when its row is clicked", async () => {

@@ -22,6 +22,7 @@ import { MultiSelectPicker } from "@/components/MultiSelectPicker";
 import { SubmitForLabellingButton } from "@/components/human-labelling/labellingSubmit";
 import { SearchIcon } from "@/components/icons";
 import { RefreshButton } from "@/components/RefreshButton";
+import { TraceScoringToggle } from "@/components/traces/TraceScoringToggle";
 import {
   Button,
   LoadingState,
@@ -75,6 +76,9 @@ function traceRowOutputFacts(trace: TraceSummary): TraceOutputFacts {
 export function TracesTabContent({
   agentUuid,
   agentNature = "conversation",
+  autoScoreTraces = false,
+  onAutoScoreTracesChange,
+  isActive = true,
   onTestsCreated,
   onViewTests,
   onAgentDefaultsAttached,
@@ -83,6 +87,11 @@ export function TracesTabContent({
   /** A general agent answers one input at a time, so the sending code shows a
    * single piece of text rather than a conversation history. */
   agentNature?: "conversation" | "general";
+  /** Whether newly ingested traces are scored automatically. */
+  autoScoreTraces?: boolean;
+  onAutoScoreTracesChange?: (enabled: boolean) => void;
+  /** The traces tab is on screen. Polling pauses when this is false. */
+  isActive?: boolean;
   /** Called after traces are turned into tests, so the Tests tab reloads. */
   onTestsCreated: () => void;
   /** Opens the Tests tab, where the created tests are listed. */
@@ -142,6 +151,7 @@ export function TracesTabContent({
     q: search,
     outputType: outputFilter,
     labels: labelFilter,
+    poll: isActive,
   });
 
   // Every trace the list matches, not only the ticked ones. The two bulk
@@ -487,6 +497,14 @@ export function TracesTabContent({
 
   return (
     <div className="flex flex-col space-y-4 md:space-y-6">
+      <TraceScoringToggle
+        agentUuid={agentUuid}
+        accessToken={accessToken}
+        enabled={autoScoreTraces}
+        onEnabledChange={onAutoScoreTracesChange}
+        isActive={isActive}
+      />
+
       {error && (
         <div className="border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 text-sm rounded-lg px-4 py-3">
           {error}
