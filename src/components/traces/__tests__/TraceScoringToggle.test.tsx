@@ -4,6 +4,7 @@ import {
   fetchTraceScoringEligibility,
   setAgentAutoScoreTraces,
 } from "@/lib/tracesApi";
+import { fetchEvaluatorDetail } from "@/lib/evaluatorApi";
 
 jest.mock("../../../lib/tracesApi", () => ({
   __esModule: true,
@@ -14,13 +15,41 @@ jest.mock("../../../lib/reportError", () => ({
   __esModule: true,
   reportError: jest.fn(),
 }));
+jest.mock("../../../hooks", () => ({
+  ...jest.requireActual("../../../hooks"),
+  useAccessToken: () => "tok",
+}));
+jest.mock("../../../lib/evaluatorApi", () => ({
+  ...jest.requireActual("../../../lib/evaluatorApi"),
+  fetchEvaluatorDetail: jest.fn(),
+}));
 
 const mockEligibility = fetchTraceScoringEligibility as jest.Mock;
 const mockSetFlag = setAgentAutoScoreTraces as jest.Mock;
+const mockFetchEvaluator = fetchEvaluatorDetail as jest.Mock;
 
 beforeEach(() => {
   mockEligibility.mockReset();
   mockSetFlag.mockReset();
+  mockFetchEvaluator.mockReset();
+  mockFetchEvaluator.mockResolvedValue({
+    uuid: "ev-1",
+    name: "Correctness",
+    description: "",
+    output_type: "binary" as const,
+    evaluator_type: "llm",
+    live_version_index: 0,
+    versions: [
+      {
+        uuid: "v1",
+        version_number: 1,
+        judge_model: "google/gemini-2.5-flash",
+        system_prompt: "Judge whether the reply is correct.",
+        output_config: null,
+        variables: null,
+      },
+    ],
+  });
 });
 
 it("shows what automatic scoring does and lists why enable is blocked", async () => {
@@ -52,7 +81,7 @@ it("shows what automatic scoring does and lists why enable is blocked", async ()
     screen.getByText("Score new traces automatically"),
   ).toBeInTheDocument();
   expect(
-    screen.getByText(/Traces already received are not scored/),
+    screen.getByText(/Past traces are not scored/),
   ).toBeInTheDocument();
 
   await waitFor(() =>
@@ -61,8 +90,14 @@ it("shows what automatic scoring does and lists why enable is blocked", async ()
     ).toBeInTheDocument(),
   );
   expect(
-    screen.getByText(/Correctness: Needs extra details that are not set/),
+    screen.getByRole("button", { name: "Correctness" }),
   ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Tone" })).not.toBeInTheDocument();
+  expect(screen.getByText("Tone")).toBeInTheDocument();
+  expect(
+    screen.getByText("Needs extra details that are not set for this agent"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Has no current version to run")).toBeInTheDocument();
   // The ineligible list is a warning, not an error: it sits in the amber
   // banner the human-alignment pages use for setup gaps.
   const banner = screen
@@ -136,8 +171,11 @@ it("enables scoring when an eligible evaluator is linked", async () => {
   );
 
   await waitFor(() =>
-    expect(screen.getByText(/Tone will score new traces/)).toBeInTheDocument(),
+    expect(
+      screen.getByRole("heading", { level: 4, name: "Evaluators used" }),
+    ).toBeInTheDocument(),
   );
+  expect(screen.getByRole("button", { name: "Tone" })).toBeInTheDocument();
   await user.click(
     screen.getByRole("switch", { name: "Score new traces automatically" }),
   );
@@ -171,9 +209,13 @@ it("names every eligible evaluator when more than one can score", async () => {
   );
   await waitFor(() =>
     expect(
-      screen.getByText("Tone, Helpfulness will score new traces."),
+      screen.getByRole("heading", { level: 4, name: "Evaluators used" }),
     ).toBeInTheDocument(),
   );
+  expect(screen.getByRole("button", { name: "Tone" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Helpfulness" }),
+  ).toBeInTheDocument();
 });
 
 it("explains when eligibility cannot be checked", async () => {
@@ -276,4 +318,33 @@ it("places the switch before the heading, matching Settings, and describes block
     .map((id) => document.getElementById(id))
     .find((node) => node?.textContent?.includes("Scoring cannot be turned on"));
   expect(statusNode).toBeTruthy();
+});
+
+it("opens how an eligible evaluator judges from its pill", async () => {
+  mockEligibility.mockResolvedValue({
+    eligible: [
+      {
+        evaluator_uuid: "ev-1",
+        evaluator_version_id: "ver-1",
+        name: "Correctness",
+      },
+    ],
+    ineligible: [],
+  });
+  const user = setupUser();
+  render(
+    <TraceScoringToggle
+      agentUuid="ag-1"
+      accessToken="tok"
+      enabled={false}
+    />,
+  );
+
+  await user.click(
+    await screen.findByRole("button", { name: "Correctness" }),
+  );
+  expect(
+    await screen.findByText("Judge whether the reply is correct."),
+  ).toBeInTheDocument();
+  expect(mockFetchEvaluator).toHaveBeenCalledWith("ev-1", "tok");
 });

@@ -1,10 +1,14 @@
 "use client";
 
 import { useId } from "react";
+import { EvaluatorPillList } from "@/components/EvaluatorPillList";
 import { WarningTriangleIcon } from "@/components/icons";
 import { useAgentTraceScoring } from "@/hooks/useAgentTraceScoring";
 import { ineligibleReasonCopy } from "@/lib/traceScoring";
-import type { TraceScoringIneligibleEvaluator } from "@/lib/tracesApi";
+import type {
+  TraceScoringEligibleEvaluator,
+  TraceScoringIneligibleEvaluator,
+} from "@/lib/tracesApi";
 
 type TraceScoringToggleProps = {
   agentUuid: string;
@@ -14,6 +18,25 @@ type TraceScoringToggleProps = {
   /** The traces tab is on screen; eligibility refetches when this becomes true. */
   isActive?: boolean;
 };
+
+function pillUuid(uuid: string) {
+  return uuid || undefined;
+}
+
+function eligiblePills(eligible: TraceScoringEligibleEvaluator[]) {
+  return eligible.map((item) => ({
+    uuid: pillUuid(item.evaluator_uuid),
+    name: item.name,
+  }));
+}
+
+function ineligiblePills(ineligible: TraceScoringIneligibleEvaluator[]) {
+  return ineligible.map((item) => ({
+    uuid: pillUuid(item.evaluator_uuid),
+    name: item.name,
+    detail: ineligibleReasonCopy(item.reason),
+  }));
+}
 
 /** Amber, not red: an ineligible evaluator is a setup gap to fix, not a
  *  judgement that anything the agent did was wrong. */
@@ -27,17 +50,9 @@ function IneligibleEvaluatorsBanner({
   return (
     <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs md:text-sm text-foreground flex items-start gap-2">
       <WarningTriangleIcon className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
-      <div className="min-w-0 space-y-1">
+      <div className="min-w-0 space-y-2">
         <p>{lead}</p>
-        {ineligible.length > 0 && (
-          <ul className="list-disc pl-4 space-y-0.5">
-            {ineligible.map((item) => (
-              <li key={item.evaluator_uuid || item.name}>
-                {item.name}: {ineligibleReasonCopy(item.reason)}
-              </li>
-            ))}
-          </ul>
-        )}
+        <EvaluatorPillList layout="flow" evaluators={ineligiblePills(ineligible)} />
       </div>
     </div>
   );
@@ -94,7 +109,7 @@ export function TraceScoringToggle({
     ? "Scoring cannot be turned on because no linked evaluator can score this agent's traces."
     : isEnabled && !canEnable
       ? "New traces will be skipped until an evaluator that can score this agent is linked. You can still turn scoring off."
-      : "Some linked evaluators cannot score this agent's traces.";
+      : "Some linked evaluators cannot be used on traces.";
 
   return (
     <div className="border border-border rounded-xl overflow-hidden">
@@ -130,7 +145,7 @@ export function TraceScoringToggle({
               id={descriptionId}
               className="text-xs md:text-sm text-muted-foreground"
             >
-              When enabled, this agent&apos;s new traces are scored with its linked Evaluator. Past traces are not
+              When enabled, this agent&apos;s new traces are scored with its linked Evaluators. Past traces are not
               scored.
             </p>
           </div>
@@ -152,11 +167,15 @@ export function TraceScoringToggle({
             </p>
           )}
           {eligible.length > 0 && (
-            <p className="text-xs md:text-sm text-muted-foreground">
-              {eligible.length === 1
-                ? `${eligible[0].name} will score new traces.`
-                : `${eligible.map((item) => item.name).join(", ")} will score new traces.`}
-            </p>
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground shrink-0">
+                Evaluators used
+              </h4>
+              <EvaluatorPillList
+                layout="flow"
+                evaluators={eligiblePills(eligible)}
+              />
+            </div>
           )}
           {eligibility !== null &&
             (ineligible.length > 0 || (isEnabled && !canEnable)) && (
