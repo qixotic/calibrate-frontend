@@ -1,8 +1,9 @@
 "use client";
 
-import { useId } from "react";
+import { useId, useState } from "react";
 import { EvaluatorPillList } from "@/components/EvaluatorPillList";
 import { WarningTriangleIcon } from "@/components/icons";
+import { ViewMoreToggle } from "@/components/ui";
 import { useAgentTraceScoring } from "@/hooks/useAgentTraceScoring";
 import { ineligibleReasonCopy } from "@/lib/traceScoring";
 import type {
@@ -39,7 +40,8 @@ function ineligiblePills(ineligible: TraceScoringIneligibleEvaluator[]) {
 }
 
 /** Amber, not red: an ineligible evaluator is a setup gap to fix, not a
- *  judgement that anything the agent did was wrong. */
+ *  judgement that anything the agent did was wrong. Collapsed behind
+ *  ViewMoreToggle until opened, so the names do not crowd the scoring switch. */
 function IneligibleEvaluatorsBanner({
   lead,
   ineligible,
@@ -47,12 +49,36 @@ function IneligibleEvaluatorsBanner({
   lead: string;
   ineligible: TraceScoringIneligibleEvaluator[];
 }) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const canExpand = ineligible.length > 0;
+
   return (
     <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs md:text-sm text-foreground flex items-start gap-2">
       <WarningTriangleIcon className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
       <div className="min-w-0 space-y-2">
-        <p>{lead}</p>
-        <EvaluatorPillList layout="flow" evaluators={ineligiblePills(ineligible)} />
+        <p>
+          {lead}
+          {canExpand && (
+            <>
+              {" "}
+              <ViewMoreToggle
+                expanded={open}
+                onClick={() => setOpen((value) => !value)}
+                aria-controls={detailsId}
+                className="align-middle whitespace-nowrap"
+              />
+            </>
+          )}
+        </p>
+        {open && canExpand && (
+          <div id={detailsId}>
+            <EvaluatorPillList
+              layout="flow"
+              evaluators={ineligiblePills(ineligible)}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -108,8 +134,8 @@ export function TraceScoringToggle({
   const ineligibleLead = enableBlocked
     ? "Scoring cannot be turned on because no linked evaluator can score this agent's traces."
     : isEnabled && !canEnable
-      ? "New traces will be skipped until an evaluator that can score this agent is linked. You can still turn scoring off."
-      : "Some linked evaluators cannot be used on traces.";
+      ? "New traces will be skipped until an eligible Evaluator is linked. You can still turn scoring off."
+      : "Some linked Evaluators cannot be used on traces.";
 
   return (
     <div className="border border-border rounded-xl overflow-hidden">

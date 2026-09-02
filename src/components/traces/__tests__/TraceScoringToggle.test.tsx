@@ -89,15 +89,12 @@ it("shows what automatic scoring does and lists why enable is blocked", async ()
       screen.getByText(/Scoring cannot be turned on/),
     ).toBeInTheDocument(),
   );
+  const viewMore = screen.getByRole("button", { name: "View more" });
+  expect(viewMore).toHaveAttribute("aria-expanded", "false");
   expect(
-    screen.getByRole("button", { name: "Correctness" }),
-  ).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Tone" })).not.toBeInTheDocument();
-  expect(screen.getByText("Tone")).toBeInTheDocument();
-  expect(
-    screen.getByText("Needs extra details that are not set for this agent"),
-  ).toBeInTheDocument();
-  expect(screen.getByText("Has no current version to run")).toBeInTheDocument();
+    screen.queryByRole("button", { name: "Correctness" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Tone")).not.toBeInTheDocument();
   // The ineligible list is a warning, not an error: it sits in the amber
   // banner the human-alignment pages use for setup gaps.
   const banner = screen
@@ -107,6 +104,30 @@ it("shows what automatic scoring does and lists why enable is blocked", async ()
   expect(
     screen.getByRole("switch", { name: "Score new traces automatically" }),
   ).toBeDisabled();
+
+  const user = setupUser();
+  await user.click(viewMore);
+  expect(
+    screen.getByRole("button", { name: "View less" }),
+  ).toHaveAttribute("aria-expanded", "true");
+  expect(
+    screen.getByRole("button", { name: "Correctness" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Tone" })).not.toBeInTheDocument();
+  expect(screen.getByText("Tone")).toBeInTheDocument();
+  expect(
+    screen.getByText("Needs extra details that are not set for this agent"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Has no current version to run")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "View less" }));
+  expect(screen.getByRole("button", { name: "View more" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Correctness" }),
+  ).not.toBeInTheDocument();
 });
 
 it("lets an already-on agent be turned off even when nothing is eligible", async () => {
@@ -318,6 +339,55 @@ it("places the switch before the heading, matching Settings, and describes block
     .map((id) => document.getElementById(id))
     .find((node) => node?.textContent?.includes("Scoring cannot be turned on"));
   expect(statusNode).toBeTruthy();
+});
+
+it("hides View more when the warning has no ineligible evaluators to list", async () => {
+  mockEligibility.mockResolvedValue({
+    eligible: [],
+    ineligible: [],
+  });
+  render(
+    <TraceScoringToggle
+      agentUuid="ag-1"
+      accessToken="tok"
+      enabled
+    />,
+  );
+
+  await waitFor(() =>
+    expect(screen.getByText(/You can still turn scoring off/)).toBeInTheDocument(),
+  );
+  expect(
+    screen.queryByRole("button", { name: "View more" }),
+  ).not.toBeInTheDocument();
+});
+
+it("opens how an ineligible evaluator judges from its pill after View more", async () => {
+  mockEligibility.mockResolvedValue({
+    eligible: [],
+    ineligible: [
+      {
+        evaluator_uuid: "ev-1",
+        name: "Correctness",
+        reason: "declares_variables",
+      },
+    ],
+  });
+  const user = setupUser();
+  render(
+    <TraceScoringToggle
+      agentUuid="ag-1"
+      accessToken="tok"
+      enabled={false}
+    />,
+  );
+
+  await user.click(await screen.findByRole("button", { name: "View more" }));
+  await user.click(screen.getByRole("button", { name: "Correctness" }));
+  expect(
+    await screen.findByText("Judge whether the reply is correct."),
+  ).toBeInTheDocument();
+  expect(mockFetchEvaluator).toHaveBeenCalledWith("ev-1", "tok");
 });
 
 it("opens how an eligible evaluator judges from its pill", async () => {
