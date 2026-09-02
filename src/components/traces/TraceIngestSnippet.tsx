@@ -127,28 +127,7 @@ export function TraceIngestSnippet({
     // The code gets the larger share: a key and a URL on one line need the room
     // more than the explanations do.
     <div className="flex flex-col lg:grid lg:grid-cols-[3fr_2fr] gap-4">
-      <div className="min-w-0 space-y-2">
-        <div className="flex items-center justify-end gap-2">
-          <span className="text-xs text-muted-foreground">
-            Include optional fields
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={includeOptional}
-            aria-label="Include optional fields"
-            onClick={() => setIncludeOptional((value) => !value)}
-            className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors cursor-pointer ${
-              includeOptional ? "bg-foreground" : "bg-muted-foreground/40"
-            }`}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background transition-transform ${
-                includeOptional ? "translate-x-4" : "translate-x-1"
-              }`}
-            />
-          </button>
-        </div>
+      <div className="min-w-0">
         {/* Tabs on the left of the header bar, copy on the right, code below. */}
         <div className="border border-border rounded-lg overflow-hidden bg-muted/40">
           <div className="flex items-center justify-between gap-2 pl-1 pr-1 py-1 border-b border-border">
@@ -222,6 +201,26 @@ export function TraceIngestSnippet({
         <FieldList optional={false} agentNature={agentNature} />
         <div className="space-y-2">
           <p className="text-xs font-medium text-foreground">Optional</p>
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={includeOptional}
+              onClick={() => setIncludeOptional((value) => !value)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
+                includeOptional ? "bg-foreground" : "bg-border"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background transition-transform ${
+                  includeOptional ? "translate-x-4" : "translate-x-1"
+                }`}
+              />
+            </button>
+            <span className="text-sm text-muted-foreground">
+              Include optional fields in snippet
+            </span>
+          </label>
           <FieldList optional agentNature={agentNature} />
         </div>
       </div>

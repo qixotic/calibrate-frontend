@@ -409,7 +409,7 @@ export function TracesTabContent({
 
   // The setup steps go away once the first trace lands, so the code that sends
   // one stays reachable from here: to add another service, or to check a field.
-  const [codeOpen, setCodeOpen] = useState(false);
+  const [integrationGuideOpen, setIntegrationGuideOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
@@ -553,8 +553,8 @@ export function TracesTabContent({
             loading={isRefreshing}
             onClick={() => void handleRefresh()}
           />
-          <Button variant="secondary" onClick={() => setCodeOpen(true)}>
-            View code
+          <Button variant="secondary" onClick={() => setIntegrationGuideOpen(true)}>
+            Integration Guide
           </Button>
         </div>
       )}
@@ -718,8 +718,8 @@ export function TracesTabContent({
       )}
 
       <TraceIngestCodeDialog
-        isOpen={codeOpen}
-        onClose={() => setCodeOpen(false)}
+        isOpen={integrationGuideOpen}
+        onClose={() => setIntegrationGuideOpen(false)}
         agentUuid={agentUuid}
         agentNature={agentNature}
       />

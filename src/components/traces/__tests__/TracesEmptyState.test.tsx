@@ -269,6 +269,16 @@ it("explains every part of the request beside it", async () => {
   expect(optional).toHaveTextContent("message_id");
   expect(optional).toHaveTextContent("conversation_id");
   expect(optional).not.toHaveTextContent("agent_id");
+
+  // The snippet toggle sits after that list, switch before the words, the
+  // same way other include-this-in-the-example switches are drawn.
+  const includeSwitch = screen.getByRole("switch", {
+    name: "Include optional fields",
+  });
+  expect(
+    screen.getByText("metadata").compareDocumentPosition(includeSwitch) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
 });
 
 it("creates a key in step one and fills it into the snippet", async () => {
