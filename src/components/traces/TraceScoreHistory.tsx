@@ -1,10 +1,9 @@
 "use client";
 
 import { EvaluatorVerdictCard } from "@/components/EvaluatorVerdictCard";
-import { StatusBadge } from "@/components/ui";
+import { PassFailCountPills, StatusBadge } from "@/components/ui";
 import {
-  scoringPassSummaryCopy,
-  scoringResultCountCopy,
+  scoringResultCounts,
   scoringRunErrorCopy,
   scoringStatusLabel,
 } from "@/lib/traceScoring";
@@ -35,16 +34,13 @@ function verdictFields(result: TraceScoreResult): {
 }
 
 function RunHeader({ run, isLatest }: { run: TraceScoringRun; isLatest: boolean }) {
-  const count = scoringResultCountCopy(
-    run.results.filter((result) => result.passed).length,
-    run.results.length,
-  );
-  const allPassed =
-    run.status === "completed" &&
-    run.results.length > 0 &&
-    run.results.every((result) => result.passed);
-  const passLabel =
-    run.status === "completed" ? scoringPassSummaryCopy(allPassed) : null;
+  const counts =
+    run.status === "completed"
+      ? scoringResultCounts(
+          run.results.filter((result) => result.passed).length,
+          run.results.length,
+        )
+      : null;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -55,19 +51,8 @@ function RunHeader({ run, isLatest }: { run: TraceScoringRun; isLatest: boolean 
         status={run.status}
         showSpinner={run.status === "pending" || run.status === "processing"}
       />
-      {passLabel && (
-        <span
-          className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium ${
-            allPassed
-              ? "bg-green-500/15 text-green-600 dark:text-green-400"
-              : "bg-red-500/15 text-red-600 dark:text-red-400"
-          }`}
-        >
-          {passLabel}
-        </span>
-      )}
-      {run.status === "completed" && count && (
-        <span className="text-xs text-muted-foreground">{count}</span>
+      {counts && (
+        <PassFailCountPills passed={counts.passed} failed={counts.failed} />
       )}
     </div>
   );

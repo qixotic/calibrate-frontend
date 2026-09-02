@@ -68,20 +68,21 @@ export function scoringStatusLabel(status: TraceScoringStatus): string {
   }
 }
 
-/** Compact pass count for a completed run. Never an average. */
-export function scoringResultCountCopy(
+export type ScoringResultCounts = {
+  passed: number;
+  failed: number;
+};
+
+/**
+ * Success / Fail counts for a completed run. Pills carry each count themselves.
+ */
+export function scoringResultCounts(
   nPassed: number | null | undefined,
   nTotal: number | null | undefined,
-): string | null {
+): ScoringResultCounts | null {
   if (nPassed == null || nTotal == null || nTotal < 1) return null;
-  return `${nPassed} of ${nTotal} passed`;
-}
-
-export function scoringPassSummaryCopy(
-  passed: boolean | null | undefined,
-): string | null {
-  if (passed == null) return null;
-  return passed ? "Passed" : "Did not pass";
+  const passed = Math.max(nPassed, 0);
+  return { passed, failed: Math.max(nTotal - passed, 0) };
 }
 
 export type ParsedAutoScoreIneligible = {

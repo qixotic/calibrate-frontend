@@ -191,8 +191,9 @@ describe("TracesTable", () => {
         }),
       ],
     });
-    expect(screen.getAllByText("Did not pass").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("1 of 2 passed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 Success").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 Fail").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/passed/i)).not.toBeInTheDocument();
   });
 
   it("opens a trace when its row is clicked", async () => {

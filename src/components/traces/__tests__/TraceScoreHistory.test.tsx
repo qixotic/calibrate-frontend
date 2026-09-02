@@ -73,8 +73,9 @@ it("renders newest first, splitting each stored value back into its own type", (
 
   expect(screen.getByText("Latest scores")).toBeInTheDocument();
   expect(screen.getByText("Earlier scores")).toBeInTheDocument();
-  expect(screen.getByText("Did not pass")).toBeInTheDocument();
-  expect(screen.getByText("1 of 2 passed")).toBeInTheDocument();
+  expect(screen.getByText("1 Success")).toBeInTheDocument();
+  expect(screen.getByText("1 Fail")).toBeInTheDocument();
+  expect(screen.queryByText(/passed/i)).not.toBeInTheDocument();
   // A binary value 1 reaches the verdict card as a true match; a rating
   // value reaches it as the score. Neither field carries the other type.
   expect(screen.getByTestId("verdict-Tone")).toHaveTextContent(

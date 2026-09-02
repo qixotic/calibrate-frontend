@@ -3,8 +3,7 @@ import {
   isTraceScoringInProgress,
   pageHasOpenTraceScoring,
   parseAutoScoreEnableError,
-  scoringPassSummaryCopy,
-  scoringResultCountCopy,
+  scoringResultCounts,
   scoringRunErrorCopy,
   scoringStatusLabel,
 } from "../traceScoring";
@@ -68,11 +67,14 @@ describe("copy", () => {
   it("labels statuses and pass counts without mixing evaluator types", () => {
     expect(scoringStatusLabel("pending")).toBe("Waiting");
     expect(scoringStatusLabel("processing")).toBe("Scoring");
-    expect(scoringPassSummaryCopy(true)).toBe("Passed");
-    expect(scoringPassSummaryCopy(false)).toBe("Did not pass");
-    expect(scoringPassSummaryCopy(null)).toBeNull();
-    expect(scoringResultCountCopy(2, 4)).toBe("2 of 4 passed");
-    expect(scoringResultCountCopy(0, 0)).toBeNull();
+    expect(scoringResultCounts(2, 4)).toEqual({ passed: 2, failed: 2 });
+    expect(scoringResultCounts(2, 2)).toEqual({ passed: 2, failed: 0 });
+    expect(scoringResultCounts(0, 3)).toEqual({ passed: 0, failed: 3 });
+    expect(scoringResultCounts(0, 0)).toBeNull();
+    expect(scoringResultCounts(null, 4)).toBeNull();
+    expect(scoringResultCounts(2, undefined)).toBeNull();
+    expect(scoringResultCounts(-1, 3)).toEqual({ passed: 0, failed: 3 });
+    expect(scoringResultCounts(5, 3)).toEqual({ passed: 5, failed: 0 });
   });
 });
 
